@@ -91,6 +91,14 @@ agent = Agent(
     tools=[get_current_datetime, calculate_tip, get_current_weather],
 )
 
-prompt = input("You: ")
-result = Runner.run_sync(agent, prompt)
-print(f"Assistant: {result.final_output}")
+history = []
+
+while True:
+    prompt = input("You: ")
+    if prompt.strip().lower() in {"exit", "quit"}:
+        break
+
+    history.append({"role": "user", "content": prompt})
+    result = Runner.run_sync(agent, history)
+    print(f"Assistant: {result.final_output}")
+    history = result.to_input_list()
