@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from dotenv import load_dotenv
-from agents import Agent, Runner, function_tool
+from agents import Agent, Runner, function_tool, handoff
 
 load_dotenv()
 
@@ -85,10 +85,30 @@ def get_current_weather(location: str) -> str:
         return f"I couldn't retrieve current weather for {location} right now."
 
 
+def show_travel_handoff(context) -> None:
+    print("[debug] handing off to Travel Agent")
+
+
+travel_agent = Agent(
+    name="Travel Agent",
+    handoff_description="Handles travel planning, destination advice, weather, and logistics.",
+    instructions=(
+        "You specialize in travel planning, destination advice, "
+        "weather-related travel questions, and travel logistics."
+    ),
+    tools=[get_current_datetime, get_current_weather],
+)
+
+
 agent = Agent(
     name="Assistant",
-    instructions="You are a helpful general-purpose assistant. Use the date and time tool when needed.",
+    instructions=(
+        "You are a helpful general-purpose assistant. Use the date and time tool when needed. "
+        "For every travel-related request, always hand off to the Travel Agent before answering "
+        "or using any tools yourself. Do not handle travel-related requests directly."
+    ),
     tools=[get_current_datetime, calculate_tip, get_current_weather],
+    handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
 
 history = []
