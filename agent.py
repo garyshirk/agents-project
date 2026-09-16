@@ -1,10 +1,11 @@
 import json
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from dotenv import load_dotenv
-from agents import Agent, Runner, function_tool, handoff
+from agents import Agent, Runner, SQLiteSession, function_tool, handoff
 
 load_dotenv()
 
@@ -137,14 +138,18 @@ agent = Agent(
     handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
 
-history = []
+session = SQLiteSession(
+    "default_conversation",
+    Path(__file__).with_name("sessions.db"),
+)
 
-while True:
-    prompt = input("You: ")
-    if prompt.strip().lower() in {"exit", "quit"}:
-        break
+try:
+    while True:
+        prompt = input("You: ")
+        if prompt.strip().lower() in {"exit", "quit"}:
+            break
 
-    history.append({"role": "user", "content": prompt})
-    result = Runner.run_sync(agent, history)
-    print(f"Assistant: {result.final_output}")
-    history = result.to_input_list()
+        result = Runner.run_sync(agent, prompt, session=session)
+        print(f"Assistant: {result.final_output}")
+finally:
+    session.close()
