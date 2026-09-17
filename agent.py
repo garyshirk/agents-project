@@ -121,20 +121,75 @@ travel_agent = Agent(
     handoff_description="Handles travel planning, destination advice, weather, and logistics.",
     instructions=(
         "You specialize in travel planning, destination advice, "
-        "weather-related travel questions, and travel logistics."
+        "weather-related travel questions, and travel logistics. "
+        "For any answer that depends on current or future weather, always call "
+        "get_current_weather for the requested location and date before answering. "
+        "If needed, use get_current_datetime first to resolve a relative date such as tomorrow."
     ),
     tools=[get_current_datetime, get_current_weather],
+)
+
+
+budget_agent = Agent(
+    name="Budget Agent",
+    instructions=(
+        "You specialize in simple budgets, cost breakdowns, comparisons, and trade-offs. "
+        "Use the figures provided by the caller, state any assumptions, and return a concise "
+        "analysis that another agent can use. Do not invent current prices."
+    ),
+)
+
+
+async def travel_tool_output(result):
+    print("[debug] Travel Agent called as tool")
+    return result.final_output
+
+
+async def budget_tool_output(result):
+    print("[debug] Budget Agent called as tool")
+    return result.final_output
+
+
+travel_agent_tool = travel_agent.as_tool(
+    tool_name="consult_travel_agent",
+    tool_description=(
+        "Get focused travel planning, destination, weather, or logistics advice "
+        "when the Assistant should remain responsible for the final response."
+    ),
+    custom_output_extractor=travel_tool_output,
+)
+
+budget_agent_tool = budget_agent.as_tool(
+    tool_name="consult_budget_agent",
+    tool_description=(
+        "Get a focused budget, cost breakdown, comparison, or spending analysis "
+        "when the Assistant should remain responsible for the final response."
+    ),
+    custom_output_extractor=budget_tool_output,
 )
 
 
 agent = Agent(
     name="Assistant",
     instructions=(
-        "You are a helpful general-purpose assistant. Use the date and time tool when needed. "
-        "For every travel-related request, always hand off to the Travel Agent before answering "
-        "or using any tools yourself. Do not handle travel-related requests directly."
+        "You are a helpful general-purpose assistant. "
+        "Answer ordinary requests yourself and use your function tools when appropriate. "
+        "For a travel-only request, hand off to the Travel Agent unless the user asks you "
+        "to remain in control or the request also requires another specialist. "
+        "Use consult_travel_agent for bounded travel advice when you will compose the final answer. "
+        "Use consult_budget_agent for budgets, cost breakdowns, comparisons, and spending trade-offs. "
+        "For requests requiring both travel and budget expertise, call both specialist tools and "
+        "combine their results into one final answer. "
+        "When calling a specialist tool, include all relevant details because it does not receive "
+        "the conversation history automatically."
     ),
-    tools=[get_current_datetime, calculate_tip, get_current_weather],
+    tools=[
+        get_current_datetime,
+        calculate_tip,
+        get_current_weather,
+        travel_agent_tool,
+        budget_agent_tool,
+    ],
     handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
 
