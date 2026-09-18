@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from dotenv import load_dotenv
-from agents import Agent, Runner, SQLiteSession, function_tool, handoff
+from agents import Agent, RunConfig, Runner, SQLiteSession, function_tool, handoff
 
 load_dotenv()
 
@@ -193,6 +193,11 @@ agent = Agent(
     handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
 
+run_config = RunConfig(
+    workflow_name="Learning agent workflow",
+    group_id="default_conversation",
+)
+
 session = SQLiteSession(
     "default_conversation",
     Path(__file__).with_name("sessions.db"),
@@ -204,7 +209,7 @@ try:
         if prompt.strip().lower() in {"exit", "quit"}:
             break
 
-        result = Runner.run_sync(agent, prompt, session=session)
+        result = Runner.run_sync(agent, prompt, session=session, run_config=run_config)
         print(f"Assistant: {result.final_output}")
 finally:
     session.close()
