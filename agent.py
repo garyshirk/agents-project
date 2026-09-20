@@ -156,6 +156,35 @@ sourcing_agent = Agent(
 )
 
 
+resale_agent = Agent(
+    name="Resale Agent",
+    instructions=(
+        "Research resale-market evidence for an exact product using web search; do not calculate "
+        "profitability. Prefer UPC/GTIN and model numbers over fuzzy title matching, verify the exact "
+        "product and variant as carefully as public information permits, and clearly identify or "
+        "preferably exclude mismatches. Distinguish actual-sale evidence, publicly visible sold "
+        "listings, active asking prices, marketplace aggregates, and trade-in offers. Never treat an "
+        "active listing as proof of a sale or assume a completed listing sold without source support. "
+        "An active listing displaying 'N sold' remains active asking-price evidence unless the source "
+        "separately establishes the realized transaction price; do not present its current displayed "
+        "price as the historical sale price of those units. You may report 'N sold' separately as "
+        "cumulative quantity or demand evidence with that limitation. Classify a listing as sold-price "
+        "evidence only when the source explicitly establishes both that it sold and its realized sale "
+        "price. If a listing is marked sold but the transaction price is unverifiable, such as when a "
+        "Best Offer may have been accepted, state that limitation instead of treating the asking price "
+        "as realized. Base sold-price ranges and strongest completed-sale evidence only on records that "
+        "meet these standards. "
+        "Never invent an accepted-offer or sale price, demand, velocity, seller, condition, product "
+        "match, or unavailable detail. For useful comparables, report the marketplace, evidence type, "
+        "matched product and variant, condition, price, shipping, date, seller, quantity sold, direct "
+        "source URL, and verification limitations when each is available. State the research date when "
+        "practical, preserve source URLs, and summarize the evidence strength while keeping any "
+        "estimated or suggested resale value distinct from the raw evidence."
+    ),
+    tools=[WebSearchTool(external_web_access=True)],
+)
+
+
 async def travel_tool_output(result):
     print("[debug] Travel Agent called as tool")
     return result.final_output
@@ -168,6 +197,11 @@ async def budget_tool_output(result):
 
 async def sourcing_tool_output(result):
     print("[debug] Sourcing Agent called as tool")
+    return result.final_output
+
+
+async def resale_tool_output(result):
+    print("[debug] Resale Agent called as tool")
     return result.final_output
 
 
@@ -198,6 +232,14 @@ sourcing_agent_tool = sourcing_agent.as_tool(
     custom_output_extractor=sourcing_tool_output,
 )
 
+resale_agent_tool = resale_agent.as_tool(
+    tool_name="consult_resale_agent",
+    tool_description=(
+        "Research resale-market evidence and realistic resale value for an exact product."
+    ),
+    custom_output_extractor=resale_tool_output,
+)
+
 
 agent = Agent(
     name="Assistant",
@@ -208,9 +250,12 @@ agent = Agent(
         "to remain in control or the request also requires another specialist. "
         "Use consult_travel_agent for bounded travel advice when you will compose the final answer. "
         "Use consult_budget_agent for budgets, cost breakdowns, comparisons, and spending trade-offs. "
-        "Use consult_sourcing_agent for current product listings, retailer prices, seller "
-        "information, and sourcing research. "
-        "When using its results, preserve each source URL alongside the corresponding sourcing "
+        "Use consult_sourcing_agent for acquisition listings, current purchase prices, seller "
+        "information, and sourcing research. Use consult_resale_agent for resale-market evidence "
+        "and realistic resale-value research. When resale research depends on exact product identity "
+        "discovered by Sourcing, include those identity details in the Resale Agent delegation; it "
+        "does not receive the Sourcing Agent's result or conversation history automatically. "
+        "When using sourcing or resale results, preserve each source URL alongside the corresponding "
         "finding in your final response, and never claim links are included unless they appear "
         "in the response text. "
         "For requests requiring both travel and budget expertise, call both specialist tools and "
@@ -225,6 +270,7 @@ agent = Agent(
         travel_agent_tool,
         budget_agent_tool,
         sourcing_agent_tool,
+        resale_agent_tool,
     ],
     handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
