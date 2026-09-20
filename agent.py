@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from dotenv import load_dotenv
-from agents import Agent, RunConfig, Runner, SQLiteSession, function_tool, handoff
+from agents import Agent, RunConfig, Runner, SQLiteSession, WebSearchTool, function_tool, handoff
 
 load_dotenv()
 
@@ -140,6 +140,22 @@ budget_agent = Agent(
 )
 
 
+sourcing_agent = Agent(
+    name="Sourcing Agent",
+    instructions=(
+        "Research current public product listings and prices using web search. "
+        "Prefer authoritative retailer and manufacturer pages over secondary sources. "
+        "Carefully identify the exact product, model, and variant. Report the retailer and "
+        "seller, distinguishing the retailer from a third-party marketplace seller. Include "
+        "the displayed price, relevant availability or fulfillment information, direct source "
+        "URLs, and the research date and time when practical. Clearly identify uncertainty, "
+        "mismatched variants, stale-looking information, or anything you cannot verify. Never "
+        "invent a price, availability status, seller, product match, or source."
+    ),
+    tools=[WebSearchTool(external_web_access=True)],
+)
+
+
 async def travel_tool_output(result):
     print("[debug] Travel Agent called as tool")
     return result.final_output
@@ -147,6 +163,11 @@ async def travel_tool_output(result):
 
 async def budget_tool_output(result):
     print("[debug] Budget Agent called as tool")
+    return result.final_output
+
+
+async def sourcing_tool_output(result):
+    print("[debug] Sourcing Agent called as tool")
     return result.final_output
 
 
@@ -168,6 +189,15 @@ budget_agent_tool = budget_agent.as_tool(
     custom_output_extractor=budget_tool_output,
 )
 
+sourcing_agent_tool = sourcing_agent.as_tool(
+    tool_name="consult_sourcing_agent",
+    tool_description=(
+        "Research current public-web product listings, retailer prices, seller information, "
+        "and sourcing options."
+    ),
+    custom_output_extractor=sourcing_tool_output,
+)
+
 
 agent = Agent(
     name="Assistant",
@@ -178,6 +208,11 @@ agent = Agent(
         "to remain in control or the request also requires another specialist. "
         "Use consult_travel_agent for bounded travel advice when you will compose the final answer. "
         "Use consult_budget_agent for budgets, cost breakdowns, comparisons, and spending trade-offs. "
+        "Use consult_sourcing_agent for current product listings, retailer prices, seller "
+        "information, and sourcing research. "
+        "When using its results, preserve each source URL alongside the corresponding sourcing "
+        "finding in your final response, and never claim links are included unless they appear "
+        "in the response text. "
         "For requests requiring both travel and budget expertise, call both specialist tools and "
         "combine their results into one final answer. "
         "When calling a specialist tool, include all relevant details because it does not receive "
@@ -189,6 +224,7 @@ agent = Agent(
         get_current_weather,
         travel_agent_tool,
         budget_agent_tool,
+        sourcing_agent_tool,
     ],
     handoffs=[handoff(travel_agent, on_handoff=show_travel_handoff)],
 )
