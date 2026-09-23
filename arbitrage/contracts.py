@@ -1,6 +1,22 @@
+from decimal import Decimal
 from enum import Enum
+from typing import Annotated
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
+
+
+DecimalString = Annotated[
+    Decimal,
+    WithJsonSchema({"type": "string"}, mode="validation"),
+    WithJsonSchema({"type": "string"}, mode="serialization"),
+]
+
+NonNegativeDecimalString = Annotated[
+    Decimal,
+    Field(ge=0),
+    WithJsonSchema({"type": "string"}, mode="validation"),
+    WithJsonSchema({"type": "string"}, mode="serialization"),
+]
 
 
 class ProductCondition(str, Enum):
@@ -168,3 +184,300 @@ class ResaleResult(BaseModel):
     unresolved_issues: list[str]
     research_timestamp: str
     notes: str | None
+
+
+class InputBasis(str, Enum):
+    VERIFIED = "VERIFIED"
+    CALCULATED = "CALCULATED"
+    ESTIMATED = "ESTIMATED"
+    ASSUMED = "ASSUMED"
+
+
+class SourceType(str, Enum):
+    ONLINE_RETAILER = "ONLINE_RETAILER"
+    PHYSICAL_RETAILER = "PHYSICAL_RETAILER"
+    ONLINE_MARKETPLACE = "ONLINE_MARKETPLACE"
+    PHYSICAL_MARKETPLACE = "PHYSICAL_MARKETPLACE"
+    WHOLESALER = "WHOLESALER"
+    OTHER = "OTHER"
+
+
+class CostType(str, Enum):
+    FIXED_PER_UNIT = "FIXED_PER_UNIT"
+    FIXED_PER_BATCH = "FIXED_PER_BATCH"
+    PERCENT_OF_UNIT_PRICE = "PERCENT_OF_UNIT_PRICE"
+
+
+class ProfitabilityStatus(str, Enum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT_INPUTS = "INSUFFICIENT_INPUTS"
+
+
+class ScenarioSide(str, Enum):
+    ACQUISITION = "ACQUISITION"
+    SALE = "SALE"
+
+
+class UnknownMateriality(str, Enum):
+    NON_MATERIAL = "NON_MATERIAL"
+    MATERIAL = "MATERIAL"
+
+
+class CostComponent(BaseModel):
+    cost_id: str
+    name: str
+    cost_type: CostType
+    value: NonNegativeDecimalString
+    basis: InputBasis
+    notes: str | None
+
+    @field_validator("cost_id", "name")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+class UnknownInput(BaseModel):
+    name: str
+    materiality: UnknownMateriality
+    notes: str | None
+
+    @field_validator("name")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+def _validate_unique_cost_ids(costs: list[CostComponent], field_name: str) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for cost in costs:
+        if cost.cost_id in seen and cost.cost_id not in duplicates:
+            duplicates.append(cost.cost_id)
+        seen.add(cost.cost_id)
+    if duplicates:
+        raise ValueError(f"{field_name} contains duplicate cost_id values: {duplicates}")
+
+
+class AcquisitionScenario(BaseModel):
+    product_identity: ProductIdentity
+    source_type: SourceType
+    source_name: str
+    source_references: list[str]
+    condition: ProductCondition
+    currency: str
+    unit_purchase_price: NonNegativeDecimalString
+    purchase_price_basis: InputBasis
+    quantity: int = Field(ge=1)
+    additional_costs: list[CostComponent]
+    quantity_available: int | None = Field(ge=0)
+    quantity_available_basis: InputBasis | None
+    purchase_limit: int | None = Field(ge=1)
+    purchase_requirements: list[str]
+    assumptions: list[str]
+    unknowns: list[UnknownInput]
+    notes: str | None
+
+    @field_validator("source_name", "currency")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_scenario(self) -> "AcquisitionScenario":
+        if self.quantity_available is None and self.quantity_available_basis is not None:
+            raise ValueError(
+                "quantity_available_basis must be None when quantity_available is None"
+            )
+        if self.quantity_available is not None:
+            if self.quantity_available_basis is None:
+                raise ValueError(
+                    "quantity_available_basis is required when quantity_available is supplied"
+                )
+            if self.quantity > self.quantity_available:
+                raise ValueError("quantity must not exceed quantity_available")
+        if self.purchase_limit is not None and self.quantity > self.purchase_limit:
+            raise ValueError("quantity must not exceed purchase_limit")
+        if self.condition != self.product_identity.condition:
+            raise ValueError("acquisition condition must match product identity condition")
+        _validate_unique_cost_ids(self.additional_costs, "additional_costs")
+        return self
+
+
+class SaleScenario(BaseModel):
+    marketplace_name: str
+    marketplace_references: list[str]
+    currency: str
+    target_condition: ProductCondition
+    resale_price_low: NonNegativeDecimalString
+    resale_price_expected: NonNegativeDecimalString | None
+    resale_price_high: NonNegativeDecimalString
+    resale_price_basis: InputBasis
+    selling_costs: list[CostComponent]
+    quantity: int = Field(ge=1)
+    assumptions: list[str]
+    unknowns: list[UnknownInput]
+    notes: str | None
+
+    @field_validator("marketplace_name", "currency")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_scenario(self) -> "SaleScenario":
+        if self.resale_price_low > self.resale_price_high:
+            raise ValueError("resale_price_low must not exceed resale_price_high")
+        if self.resale_price_expected is not None and not (
+            self.resale_price_low
+            <= self.resale_price_expected
+            <= self.resale_price_high
+        ):
+            raise ValueError("resale_price_expected must be within the low/high range")
+        _validate_unique_cost_ids(self.selling_costs, "selling_costs")
+        return self
+
+
+class SensitivityInput(BaseModel):
+    cost_id: str
+    scenario_side: ScenarioSide
+    low_value: NonNegativeDecimalString
+    high_value: NonNegativeDecimalString
+
+    @field_validator("cost_id")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "SensitivityInput":
+        if self.high_value < self.low_value:
+            raise ValueError("high_value must be greater than or equal to low_value")
+        return self
+
+
+class ProfitabilityRequest(BaseModel):
+    acquisition: AcquisitionScenario
+    sale: SaleScenario
+    sensitivity_inputs: list[SensitivityInput]
+
+    @model_validator(mode="after")
+    def validate_request(self) -> "ProfitabilityRequest":
+        if self.acquisition.currency != self.sale.currency:
+            raise ValueError("acquisition and sale currencies must match")
+        if self.acquisition.quantity != self.sale.quantity:
+            raise ValueError("acquisition and sale quantities must match")
+        if not (
+            self.acquisition.product_identity.condition
+            == self.acquisition.condition
+            == self.sale.target_condition
+        ):
+            raise ValueError("product, acquisition, and sale conditions must match")
+
+        acquisition_ids = {cost.cost_id for cost in self.acquisition.additional_costs}
+        sale_ids = {cost.cost_id for cost in self.sale.selling_costs}
+        targets: set[tuple[ScenarioSide, str]] = set()
+        for sensitivity in self.sensitivity_inputs:
+            available_ids = (
+                acquisition_ids
+                if sensitivity.scenario_side == ScenarioSide.ACQUISITION
+                else sale_ids
+            )
+            if sensitivity.cost_id not in available_ids:
+                raise ValueError(
+                    "sensitivity cost_id does not exist on the selected scenario side: "
+                    f"{sensitivity.scenario_side.value}/{sensitivity.cost_id}"
+                )
+            target = (sensitivity.scenario_side, sensitivity.cost_id)
+            if target in targets:
+                raise ValueError(
+                    "duplicate sensitivity target: "
+                    f"{sensitivity.scenario_side.value}/{sensitivity.cost_id}"
+                )
+            targets.add(target)
+        return self
+
+
+class CalculatedCost(BaseModel):
+    cost_id: str
+    name: str
+    cost_type: CostType
+    input_value: DecimalString
+    calculated_amount: DecimalString
+
+
+class ProfitScenarioResult(BaseModel):
+    resale_price_per_unit: DecimalString
+    gross_revenue: DecimalString
+    gross_purchase_cost: DecimalString
+    acquisition_cost_breakdown: list[CalculatedCost]
+    additional_acquisition_cost: DecimalString
+    total_acquisition_cost: DecimalString
+    effective_acquisition_cost_per_unit: DecimalString
+    selling_cost_breakdown: list[CalculatedCost]
+    total_selling_cost: DecimalString
+    net_sale_proceeds: DecimalString
+    net_profit: DecimalString
+    profit_per_unit: DecimalString
+    roi_percent: DecimalString | None
+    profit_margin_percent: DecimalString | None
+
+
+class InputQualitySummary(BaseModel):
+    verified_inputs: list[str]
+    calculated_inputs: list[str]
+    estimated_inputs: list[str]
+    assumed_inputs: list[str]
+    unknown_inputs: list[str]
+
+
+class SensitivityResult(BaseModel):
+    cost_id: str
+    cost_name: str
+    scenario_side: ScenarioSide
+    original_value: DecimalString
+    low_value: DecimalString
+    high_value: DecimalString
+    low_value_case: ProfitScenarioResult
+    high_value_case: ProfitScenarioResult
+    net_profit_change_low: DecimalString
+    net_profit_change_high: DecimalString
+
+
+class ProfitabilityResult(BaseModel):
+    status: ProfitabilityStatus
+    currency: str
+    quantity: int
+    low_case: ProfitScenarioResult | None
+    expected_case: ProfitScenarioResult | None
+    high_case: ProfitScenarioResult | None
+    input_quality: InputQualitySummary
+    sensitivity_results: list[SensitivityResult]
+    warnings: list[str]
+    notes: str | None
+
+    @model_validator(mode="after")
+    def validate_status_cases(self) -> "ProfitabilityResult":
+        if self.status == ProfitabilityStatus.INSUFFICIENT_INPUTS:
+            if any(case is not None for case in (self.low_case, self.expected_case, self.high_case)):
+                raise ValueError("INSUFFICIENT_INPUTS must not contain profitability cases")
+            if self.sensitivity_results:
+                raise ValueError("INSUFFICIENT_INPUTS must not contain sensitivity results")
+            if not self.warnings:
+                raise ValueError("INSUFFICIENT_INPUTS must identify its limitations in warnings")
+        elif self.low_case is None or self.high_case is None:
+            raise ValueError("COMPLETE and PARTIAL results require low and high cases")
+        elif self.status == ProfitabilityStatus.PARTIAL and not self.warnings:
+            raise ValueError("PARTIAL results must identify omitted unknowns in warnings")
+        return self

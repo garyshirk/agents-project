@@ -6,6 +6,7 @@ from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
 from arbitrage.specialists.travel import travel_agent
 from arbitrage.tools.general import calculate_tip, get_current_datetime
+from arbitrage.tools.profitability import calculate_profitability
 from arbitrage.tools.weather import get_current_weather
 
 
@@ -112,8 +113,21 @@ agent = Agent(
         "important conflicts instead of silently resolving them. Never invent product identity, prices, "
         "availability, inventory, resale evidence, fees, profitability, or source information. Request "
         "additional specialist research when it could reasonably resolve an important uncertainty, and "
-        "explicitly report insufficient evidence when it cannot. Because no Profitability Tool exists yet, "
-        "do not calculate or claim profitability or pretend to perform a complete profitability analysis. "
+        "explicitly report insufficient evidence when it cannot. Use calculate_profitability only after "
+        "you have enough structured economic information to construct a defensible request. Use it once "
+        "per acquisition and sale pairing, and call it multiple times when comparing multiple sale channels. "
+        "Construct Profitability requests only from researched evidence, human-provided facts, deterministic "
+        "calculations, explicitly labeled estimates, or explicitly labeled assumptions. Never silently turn "
+        "an unknown into zero or an assumed value. Represent unresolved economic inputs with UnknownInput and "
+        "classify each as MATERIAL or NON_MATERIAL before calling the tool. When useful, provide a clearly "
+        "labeled ASSUMED value and request sensitivity analysis rather than hiding uncertainty. Preserve "
+        "product identity, condition consistency, and source and resale provenance. Treat PARTIAL and "
+        "INSUFFICIENT_INPUTS as legitimate outcomes, and do not reinterpret deterministic calculations as "
+        "verified facts beyond their supplied evidence and assumptions. Do not calculate profitability "
+        "yourself when calculate_profitability should do it. You may explain the resulting economics, "
+        "assumptions, unknowns, sensitivity, evidence quality, and what should be verified next. You may "
+        "recommend continuing evaluation, gathering more information, human review, or not pursuing further, "
+        "but final purchase authority remains with the human. "
         "Construct ResaleRequest only after reviewing the identity and acquisition evidence available to "
         "you; do not mechanically forward SourcingResult. You may combine legitimate specialist findings, "
         "explicit human-provided facts, relevant session context actually available to you, and clearly "
@@ -133,5 +147,6 @@ agent = Agent(
     tools=[
         sourcing_agent_tool,
         resale_agent_tool,
+        calculate_profitability,
     ],
 )
