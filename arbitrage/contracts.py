@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime
 from enum import Enum
 from typing import Annotated
 
@@ -66,6 +67,112 @@ class AvailabilityStatus(str, Enum):
     OUT_OF_STOCK = "OUT_OF_STOCK"
     PREORDER = "PREORDER"
     UNKNOWN = "UNKNOWN"
+
+
+class CandidateIntakeSource(str, Enum):
+    HUMAN_PHYSICAL = "HUMAN_PHYSICAL"
+    HUMAN_ONLINE = "HUMAN_ONLINE"
+    AUTONOMOUS_DISCOVERY = "AUTONOMOUS_DISCOVERY"
+
+
+class HumanInputBasis(str, Enum):
+    HUMAN_OBSERVED = "HUMAN_OBSERVED"
+    HUMAN_REPORTED = "HUMAN_REPORTED"
+    HUMAN_ESTIMATED = "HUMAN_ESTIMATED"
+    HUMAN_ASSUMED = "HUMAN_ASSUMED"
+
+
+class HumanAcquisitionInput(BaseModel):
+    seller_or_store: str | None
+    purchase_price: NonNegativeDecimalString | None
+    currency: str | None
+    quantity_available: int | None = Field(ge=0)
+    purchase_limit: int | None = Field(ge=1)
+    availability_status: AvailabilityStatus | None
+    condition: ProductCondition | None
+    location_description: str | None
+    observed_at: datetime | None
+    price_basis: HumanInputBasis | None
+    quantity_basis: HumanInputBasis | None
+    condition_basis: HumanInputBasis | None
+    availability_basis: HumanInputBasis | None
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> "HumanAcquisitionInput":
+        pairs = (
+            ("purchase_price", self.purchase_price, "price_basis", self.price_basis),
+            ("quantity_available", self.quantity_available, "quantity_basis", self.quantity_basis),
+            ("condition", self.condition, "condition_basis", self.condition_basis),
+            (
+                "availability_status",
+                self.availability_status,
+                "availability_basis",
+                self.availability_basis,
+            ),
+        )
+        for value_name, value, basis_name, basis in pairs:
+            if value is None and basis is not None:
+                raise ValueError(f"{basis_name} must be None when {value_name} is None")
+            if value is not None and basis is None:
+                raise ValueError(f"{basis_name} is required when {value_name} is supplied")
+        return self
+
+
+class HumanResaleInput(BaseModel):
+    destination_market: str | None
+    resale_price_low: NonNegativeDecimalString | None
+    resale_price_expected: NonNegativeDecimalString | None
+    resale_price_high: NonNegativeDecimalString | None
+    basis: HumanInputBasis | None
+    notes: str | None
+
+    @model_validator(mode="after")
+    def validate_prices(self) -> "HumanResaleInput":
+        prices = (
+            self.resale_price_low,
+            self.resale_price_expected,
+            self.resale_price_high,
+        )
+        if any(price is not None for price in prices) and self.basis is None:
+            raise ValueError("basis is required when a resale price is supplied")
+        if all(price is None for price in prices) and self.basis is not None:
+            raise ValueError("basis must be None when no resale price is supplied")
+        if (
+            self.resale_price_low is not None
+            and self.resale_price_high is not None
+            and self.resale_price_low > self.resale_price_high
+        ):
+            raise ValueError("resale_price_low must not exceed resale_price_high")
+        if self.resale_price_expected is not None:
+            if (
+                self.resale_price_low is not None
+                and self.resale_price_expected < self.resale_price_low
+            ):
+                raise ValueError("resale_price_expected must not be below resale_price_low")
+            if (
+                self.resale_price_high is not None
+                and self.resale_price_expected > self.resale_price_high
+            ):
+                raise ValueError("resale_price_expected must not exceed resale_price_high")
+        return self
+
+
+class CandidateIntake(BaseModel):
+    intake_source: CandidateIntakeSource
+    product_identity: ProductIdentity | None
+    identity_confidence: IdentityConfidence
+    identity_basis: HumanInputBasis | None
+    acquisition: HumanAcquisitionInput | None
+    resale: HumanResaleInput | None
+    notes: str | None
+
+    @model_validator(mode="after")
+    def validate_identity_provenance(self) -> "CandidateIntake":
+        if self.product_identity is None and self.identity_basis is not None:
+            raise ValueError("identity_basis must be None when product_identity is None")
+        if self.product_identity is not None and self.identity_basis is None:
+            raise ValueError("identity_basis is required when product_identity is supplied")
+        return self
 
 
 class AdditionalCost(BaseModel):
