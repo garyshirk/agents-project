@@ -4,3 +4,6 @@ __pycache__/
 sessions.db
 sessions.db-shm
 sessions.db-wal
+arbitrage.db
+arbitrage.db-shm
+arbitrage.db-wal

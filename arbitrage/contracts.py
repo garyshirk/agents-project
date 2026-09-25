@@ -588,3 +588,141 @@ class ProfitabilityResult(BaseModel):
         elif self.status == ProfitabilityStatus.PARTIAL and not self.warnings:
             raise ValueError("PARTIAL results must identify omitted unknowns in warnings")
         return self
+
+
+class CandidateSourceKind(str, Enum):
+    PHYSICAL_STORE = "PHYSICAL_STORE"
+    ONLINE_RETAILER = "ONLINE_RETAILER"
+    MARKETPLACE_SELLER = "MARKETPLACE_SELLER"
+    HUMAN_OWNED = "HUMAN_OWNED"
+    OTHER = "OTHER"
+
+
+class CandidateSource(BaseModel):
+    source_kind: CandidateSourceKind
+    name: str
+    physical_location: str | None
+    url: str | None
+    seller_identity: str | None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_physical_location(self) -> "CandidateSource":
+        if self.source_kind == CandidateSourceKind.PHYSICAL_STORE and not (
+            self.physical_location or ""
+        ).strip():
+            raise ValueError("physical_location is required for PHYSICAL_STORE")
+        return self
+
+
+class CandidateDestinationKind(str, Enum):
+    MARKETPLACE = "MARKETPLACE"
+    LOCAL_MARKETPLACE = "LOCAL_MARKETPLACE"
+    STOREFRONT = "STOREFRONT"
+    OTHER = "OTHER"
+
+
+class CandidateDestination(BaseModel):
+    destination_kind: CandidateDestinationKind
+    name: str
+    url: str | None
+    seller_account: str | None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
+        return value
+
+
+class CandidateLifecycleStatus(str, Enum):
+    INVESTIGATING = "INVESTIGATING"
+    AWAITING_HUMAN_INPUT = "AWAITING_HUMAN_INPUT"
+    EVALUATED = "EVALUATED"
+    CLOSED = "CLOSED"
+
+
+class CandidateRecord(BaseModel):
+    candidate_id: str
+    product_identity: ProductIdentity
+    acquisition_source: CandidateSource
+    resale_destination: CandidateDestination
+    intake_origin: CandidateIntakeSource
+    lifecycle_status: CandidateLifecycleStatus
+    created_at: datetime
+    updated_at: datetime
+    latest_evaluation_id: str | None
+    notes: str | None
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def validate_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamps must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def validate_timestamps(self) -> "CandidateRecord":
+        if self.updated_at < self.created_at:
+            raise ValueError("updated_at cannot precede created_at")
+        return self
+
+
+class EvaluationTrigger(str, Enum):
+    HUMAN_REQUEST = "HUMAN_REQUEST"
+    MANUAL_REFRESH = "MANUAL_REFRESH"
+    AUTONOMOUS_DISCOVERY = "AUTONOMOUS_DISCOVERY"
+    AUTONOMOUS_REFRESH = "AUTONOMOUS_REFRESH"
+
+
+class EvaluationStatus(str, Enum):
+    IN_PROGRESS = "IN_PROGRESS"
+    AWAITING_HUMAN_INPUT = "AWAITING_HUMAN_INPUT"
+    COMPLETED = "COMPLETED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    FAILED = "FAILED"
+
+
+class CandidateEvaluation(BaseModel):
+    evaluation_id: str
+    candidate_id: str
+    trigger: EvaluationTrigger
+    status: EvaluationStatus
+    started_at: datetime
+    completed_at: datetime | None
+    intake_snapshot: CandidateIntake | None
+    sourcing_result: SourcingResult | None
+    resale_result: ResaleResult | None
+    profitability_result: ProfitabilityResult | None
+    assumptions: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    manager_notes: str | None
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def validate_timezone_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("timestamps must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def validate_status_and_timestamps(self) -> "CandidateEvaluation":
+        terminal = {
+            EvaluationStatus.COMPLETED,
+            EvaluationStatus.INSUFFICIENT_EVIDENCE,
+            EvaluationStatus.FAILED,
+        }
+        if self.completed_at is not None and self.completed_at < self.started_at:
+            raise ValueError("completed_at cannot precede started_at")
+        if self.status in terminal and self.completed_at is None:
+            raise ValueError("terminal evaluations require completed_at")
+        if self.status not in terminal and self.completed_at is not None:
+            raise ValueError("nonterminal evaluations must not have completed_at")
+        return self
