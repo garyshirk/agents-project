@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,9 +69,19 @@ def _connect(database_path: Path) -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def _connection(database_path: Path):
+    connection = _connect(database_path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 def initialize_database(database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
     path = Path(database_path)
-    with _connect(path) as connection:
+    with _connection(path) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -277,7 +288,7 @@ class CandidateRepository:
             latest_evaluation_id=None,
             notes=notes,
         )
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             connection.execute(
                 """
                 INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -298,7 +309,7 @@ class CandidateRepository:
         return candidate
 
     def get_candidate(self, candidate_id: str) -> CandidateRecord | None:
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,)
             ).fetchone()
@@ -328,7 +339,7 @@ class CandidateRepository:
         if limit is not None:
             query += " LIMIT ?"
             values.append(limit)
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             rows = connection.execute(query, values).fetchall()
         return [_candidate_from_row(row) for row in rows]
 
@@ -358,7 +369,7 @@ class CandidateRepository:
             uncertainties=list(uncertainties or []),
             manager_notes=manager_notes,
         )
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             if connection.execute(
                 "SELECT 1 FROM candidates WHERE candidate_id = ?", (candidate_id,)
             ).fetchone() is None:
@@ -397,8 +408,88 @@ class CandidateRepository:
             )
         return evaluation
 
+    def create_candidate_with_evaluation(
+        self,
+        *,
+        product_identity: ProductIdentity,
+        acquisition_source: CandidateSource,
+        resale_destination: CandidateDestination,
+        intake_origin: CandidateIntakeSource,
+        trigger: EvaluationTrigger,
+        intake_snapshot: CandidateIntake | None = None,
+        assumptions: list[str] | None = None,
+        uncertainties: list[str] | None = None,
+        candidate_notes: str | None = None,
+        manager_notes: str | None = None,
+    ) -> tuple[CandidateRecord, CandidateEvaluation]:
+        now = _utc_now()
+        candidate = CandidateRecord(
+            candidate_id=str(uuid4()),
+            product_identity=product_identity,
+            acquisition_source=acquisition_source,
+            resale_destination=resale_destination,
+            intake_origin=intake_origin,
+            lifecycle_status=CandidateLifecycleStatus.INVESTIGATING,
+            created_at=now,
+            updated_at=now,
+            latest_evaluation_id=None,
+            notes=candidate_notes,
+        )
+        evaluation = CandidateEvaluation(
+            evaluation_id=str(uuid4()),
+            candidate_id=candidate.candidate_id,
+            trigger=trigger,
+            status=EvaluationStatus.IN_PROGRESS,
+            started_at=now,
+            completed_at=None,
+            intake_snapshot=intake_snapshot,
+            sourcing_result=None,
+            resale_result=None,
+            profitability_result=None,
+            assumptions=list(assumptions or []),
+            uncertainties=list(uncertainties or []),
+            manager_notes=manager_notes,
+        )
+        with _connection(self.database_path) as connection:
+            connection.execute(
+                "INSERT INTO candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    candidate.candidate_id,
+                    candidate.product_identity.model_dump_json(),
+                    candidate.acquisition_source.model_dump_json(),
+                    candidate.resale_destination.model_dump_json(),
+                    candidate.intake_origin.value,
+                    candidate.lifecycle_status.value,
+                    _timestamp(candidate.created_at),
+                    _timestamp(candidate.updated_at),
+                    None,
+                    candidate.notes,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO candidate_evaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evaluation.evaluation_id,
+                    candidate.candidate_id,
+                    evaluation.trigger.value,
+                    evaluation.status.value,
+                    _timestamp(evaluation.started_at),
+                    None,
+                    _model_json(evaluation.intake_snapshot),
+                    None,
+                    None,
+                    None,
+                    json.dumps(evaluation.assumptions),
+                    json.dumps(evaluation.uncertainties),
+                    evaluation.manager_notes,
+                ),
+            )
+        return candidate, evaluation
+
     def get_evaluation(self, evaluation_id: str) -> CandidateEvaluation | None:
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM candidate_evaluations WHERE evaluation_id = ?",
                 (evaluation_id,),
@@ -406,7 +497,7 @@ class CandidateRepository:
         return None if row is None else _evaluation_from_row(row)
 
     def list_evaluations(self, candidate_id: str) -> list[CandidateEvaluation]:
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM candidate_evaluations
@@ -428,7 +519,7 @@ class CandidateRepository:
                 "update_evaluation_status accepts only nonterminal statuses"
             )
         now = _utc_now()
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM candidate_evaluations WHERE evaluation_id = ?",
                 (evaluation_id,),
@@ -471,6 +562,7 @@ class CandidateRepository:
         evaluation_id: str,
         *,
         status: EvaluationStatus,
+        intake_snapshot: CandidateIntake | None = None,
         sourcing_result: SourcingResult | None = None,
         resale_result: ResaleResult | None = None,
         profitability_result: ProfitabilityResult | None = None,
@@ -481,7 +573,7 @@ class CandidateRepository:
         if status not in TERMINAL_EVALUATION_STATUSES:
             raise InvalidStateTransitionError("Completion requires a terminal status")
         now = _utc_now()
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM candidate_evaluations WHERE evaluation_id = ?",
                 (evaluation_id,),
@@ -496,10 +588,13 @@ class CandidateRepository:
                 current.uncertainties if uncertainties is None else list(uncertainties)
             )
             final_notes = current.manager_notes if manager_notes is None else manager_notes
+            final_intake = (
+                current.intake_snapshot if intake_snapshot is None else intake_snapshot
+            )
             connection.execute(
                 """
                 UPDATE candidate_evaluations
-                SET status = ?, completed_at = ?, sourcing_result_json = ?,
+                SET status = ?, completed_at = ?, intake_snapshot_json = ?, sourcing_result_json = ?,
                     resale_result_json = ?, profitability_result_json = ?,
                     assumptions_json = ?, uncertainties_json = ?, manager_notes = ?
                 WHERE evaluation_id = ?
@@ -507,6 +602,7 @@ class CandidateRepository:
                 (
                     status.value,
                     _timestamp(now),
+                    _model_json(final_intake),
                     _model_json(sourcing_result),
                     _model_json(resale_result),
                     _model_json(profitability_result),
@@ -566,7 +662,7 @@ class CandidateRepository:
         notes: str | None = None,
     ) -> CandidateRecord:
         now = _utc_now()
-        with _connect(self.database_path) as connection:
+        with _connection(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,)
             ).fetchone()

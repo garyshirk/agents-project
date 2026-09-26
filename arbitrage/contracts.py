@@ -294,6 +294,7 @@ class ResaleResult(BaseModel):
 
 
 class InputBasis(str, Enum):
+    HUMAN_OBSERVED = "HUMAN_OBSERVED"
     VERIFIED = "VERIFIED"
     CALCULATED = "CALCULATED"
     ESTIMATED = "ESTIMATED"
@@ -351,6 +352,7 @@ class UnknownInput(BaseModel):
     name: str
     materiality: UnknownMateriality
     notes: str | None
+    related_cost_ids: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -358,6 +360,15 @@ class UnknownInput(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("related_cost_ids")
+    @classmethod
+    def validate_related_cost_ids(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("related_cost_ids must not contain blank values")
+        if len(values) != len(set(values)):
+            raise ValueError("related_cost_ids must not contain duplicates")
+        return values
 
 
 def _validate_unique_cost_ids(costs: list[CostComponent], field_name: str) -> None:
@@ -369,6 +380,26 @@ def _validate_unique_cost_ids(costs: list[CostComponent], field_name: str) -> No
         seen.add(cost.cost_id)
     if duplicates:
         raise ValueError(f"{field_name} contains duplicate cost_id values: {duplicates}")
+
+
+def _validate_no_unknown_zero_placeholders(
+    costs: list[CostComponent], unknowns: list[UnknownInput]
+) -> None:
+    unresolved_cost_ids = {
+        cost_id for unknown in unknowns for cost_id in unknown.related_cost_ids
+    }
+    contradictions = [
+        cost.cost_id
+        for cost in costs
+        if cost.cost_id in unresolved_cost_ids
+        and cost.basis == InputBasis.ASSUMED
+        and cost.value == 0
+    ]
+    if contradictions:
+        raise ValueError(
+            "an economic input cannot be both unresolved and an assumed zero-valued "
+            f"cost in the same scenario: {contradictions}"
+        )
 
 
 class AcquisitionScenario(BaseModel):
@@ -415,6 +446,7 @@ class AcquisitionScenario(BaseModel):
         if self.condition != self.product_identity.condition:
             raise ValueError("acquisition condition must match product identity condition")
         _validate_unique_cost_ids(self.additional_costs, "additional_costs")
+        _validate_no_unknown_zero_placeholders(self.additional_costs, self.unknowns)
         return self
 
 
@@ -451,6 +483,7 @@ class SaleScenario(BaseModel):
         ):
             raise ValueError("resale_price_expected must be within the low/high range")
         _validate_unique_cost_ids(self.selling_costs, "selling_costs")
+        _validate_no_unknown_zero_placeholders(self.selling_costs, self.unknowns)
         return self
 
 
@@ -542,6 +575,7 @@ class ProfitScenarioResult(BaseModel):
 
 
 class InputQualitySummary(BaseModel):
+    human_observed_inputs: list[str] = Field(default_factory=list)
     verified_inputs: list[str]
     calculated_inputs: list[str]
     estimated_inputs: list[str]
@@ -587,6 +621,20 @@ class ProfitabilityResult(BaseModel):
             raise ValueError("COMPLETE and PARTIAL results require low and high cases")
         elif self.status == ProfitabilityStatus.PARTIAL and not self.warnings:
             raise ValueError("PARTIAL results must identify omitted unknowns in warnings")
+        return self
+
+
+class ProfitabilityToolResult(BaseModel):
+    success: bool
+    result: ProfitabilityResult | None
+    error: str | None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "ProfitabilityToolResult":
+        if self.success and (self.result is None or self.error is not None):
+            raise ValueError("successful tool output requires result and no error")
+        if not self.success and (self.result is not None or not (self.error or "").strip()):
+            raise ValueError("failed tool output requires error and no result")
         return self
 
 
@@ -725,4 +773,132 @@ class CandidateEvaluation(BaseModel):
             raise ValueError("terminal evaluations require completed_at")
         if self.status not in terminal and self.completed_at is not None:
             raise ValueError("nonterminal evaluations must not have completed_at")
+        return self
+
+
+class WorkflowEvaluationAction(str, Enum):
+    AWAIT_HUMAN_INPUT = "AWAIT_HUMAN_INPUT"
+    RESUME = "RESUME"
+
+
+class StartCandidateEvaluationRequest(BaseModel):
+    product_identity: ProductIdentity
+    acquisition_source: CandidateSource
+    resale_destination: CandidateDestination
+    intake_origin: CandidateIntakeSource
+    intake_snapshot: CandidateIntake | None
+    trigger: EvaluationTrigger
+    assumptions: list[str]
+    uncertainties: list[str]
+    candidate_notes: str | None
+    manager_notes: str | None
+
+
+class UpdateCandidateEvaluationRequest(BaseModel):
+    action: WorkflowEvaluationAction
+
+
+class FinishCandidateEvaluationRequest(BaseModel):
+    status: EvaluationStatus
+    intake_snapshot: CandidateIntake | None
+    sourcing_result: SourcingResult | None
+    resale_result: ResaleResult | None
+    profitability_result: ProfitabilityResult | None
+    assumptions: list[str]
+    uncertainties: list[str]
+    manager_notes: str | None
+
+    @model_validator(mode="after")
+    def validate_terminal_status(self) -> "FinishCandidateEvaluationRequest":
+        if self.status not in {
+            EvaluationStatus.COMPLETED,
+            EvaluationStatus.INSUFFICIENT_EVIDENCE,
+            EvaluationStatus.FAILED,
+        }:
+            raise ValueError("finish requires a terminal EvaluationStatus")
+        return self
+
+
+class CandidateWorkflowResult(BaseModel):
+    success: bool
+    candidate_id: str | None
+    evaluation_id: str | None
+    candidate_lifecycle: CandidateLifecycleStatus | None
+    evaluation_status: EvaluationStatus | None
+    active: bool
+    error: str | None
+
+
+class LeadDisposition(str, Enum):
+    NEEDS_MORE_INFO = "NEEDS_MORE_INFO"
+    CANDIDATE_READY = "CANDIDATE_READY"
+    EXISTING_CANDIDATE = "EXISTING_CANDIDATE"
+    AMBIGUOUS_BOUNDARY = "AMBIGUOUS_BOUNDARY"
+    STOP = "STOP"
+
+
+class CandidateRelation(str, Enum):
+    NO_ACTIVE_CANDIDATE = "NO_ACTIVE_CANDIDATE"
+    SAME_AS_ACTIVE = "SAME_AS_ACTIVE"
+    CLEARLY_NEW = "CLEARLY_NEW"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+class LeadDecision(BaseModel):
+    disposition: LeadDisposition
+    relation_to_active: CandidateRelation
+    reasoning: str
+    continue_substantive_evaluation: bool
+    candidate_request: StartCandidateEvaluationRequest | None
+    clarification_question: str | None
+    user_message: str | None
+    unresolved_uncertainties: list[str]
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "LeadDecision":
+        has_question = bool((self.clarification_question or "").strip())
+        has_message = bool((self.user_message or "").strip())
+        if not self.reasoning.strip():
+            raise ValueError("reasoning must not be blank")
+        if self.disposition == LeadDisposition.CANDIDATE_READY:
+            if self.candidate_request is None:
+                raise ValueError("CANDIDATE_READY requires candidate_request")
+            if not self.continue_substantive_evaluation or has_question:
+                raise ValueError(
+                    "CANDIDATE_READY requires substantive evaluation and no clarification"
+                )
+            if self.relation_to_active == CandidateRelation.AMBIGUOUS:
+                raise ValueError("CANDIDATE_READY cannot have an ambiguous relation")
+        elif self.disposition == LeadDisposition.EXISTING_CANDIDATE:
+            if self.candidate_request is not None:
+                raise ValueError("EXISTING_CANDIDATE must not include candidate_request")
+            if not self.continue_substantive_evaluation or has_question:
+                raise ValueError(
+                    "EXISTING_CANDIDATE requires substantive evaluation and no clarification"
+                )
+            if self.relation_to_active != CandidateRelation.SAME_AS_ACTIVE:
+                raise ValueError("EXISTING_CANDIDATE requires SAME_AS_ACTIVE")
+        elif self.disposition == LeadDisposition.NEEDS_MORE_INFO:
+            if self.candidate_request is not None or not has_question:
+                raise ValueError(
+                    "NEEDS_MORE_INFO requires a clarification and no candidate_request"
+                )
+            if self.continue_substantive_evaluation:
+                raise ValueError("NEEDS_MORE_INFO must not continue substantive evaluation")
+        elif self.disposition == LeadDisposition.AMBIGUOUS_BOUNDARY:
+            if self.candidate_request is not None or not has_question:
+                raise ValueError(
+                    "AMBIGUOUS_BOUNDARY requires a clarification and no candidate_request"
+                )
+            if self.continue_substantive_evaluation:
+                raise ValueError("AMBIGUOUS_BOUNDARY must not continue substantive evaluation")
+            if self.relation_to_active != CandidateRelation.AMBIGUOUS:
+                raise ValueError("AMBIGUOUS_BOUNDARY requires an AMBIGUOUS relation")
+        elif self.disposition == LeadDisposition.STOP:
+            if self.candidate_request is not None or self.continue_substantive_evaluation:
+                raise ValueError("STOP must not include a request or continue evaluation")
+            if has_question:
+                raise ValueError("STOP must not request clarification")
+            if not has_message:
+                raise ValueError("STOP requires user_message")
         return self

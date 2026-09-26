@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
@@ -181,14 +182,14 @@ class CandidatePersistenceTests(unittest.TestCase):
         candidate = self.create_candidate()
         initialize_database(self.database_path)
         self.assertEqual(self.repository.get_candidate(candidate.candidate_id), candidate)
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             version = connection.execute(
                 "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
             ).fetchone()[0]
         self.assertEqual(version, "1")
 
     def test_unsupported_schema_version_fails_clearly(self):
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE schema_metadata SET value = '999' WHERE key = 'schema_version'"
             )
@@ -197,7 +198,7 @@ class CandidatePersistenceTests(unittest.TestCase):
 
     def test_existing_unversioned_candidate_schema_fails_clearly(self):
         other_path = Path(self.temporary_directory.name) / "unversioned.db"
-        with sqlite3.connect(other_path) as connection:
+        with closing(sqlite3.connect(other_path)) as connection, connection:
             connection.execute("CREATE TABLE candidates(candidate_id TEXT PRIMARY KEY)")
         with self.assertRaises(PersistenceDataError):
             initialize_database(other_path)
@@ -257,7 +258,7 @@ class CandidatePersistenceTests(unittest.TestCase):
             self.repository.create_evaluation(
                 "missing", trigger=EvaluationTrigger.HUMAN_REQUEST
             )
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute("PRAGMA foreign_keys = ON")
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute(
@@ -420,7 +421,7 @@ class CandidatePersistenceTests(unittest.TestCase):
 
     def test_corrupt_json_fails_visibly(self):
         candidate = self.create_candidate()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE candidates SET product_identity_json = 'not-json' WHERE candidate_id = ?",
                 (candidate.candidate_id,),

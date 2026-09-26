@@ -1,6 +1,6 @@
 from decimal import ROUND_HALF_EVEN, Decimal
 
-from agents import function_tool
+from agents import RunContextWrapper, function_tool
 
 from arbitrage.contracts import (
     AcquisitionScenario,
@@ -12,6 +12,7 @@ from arbitrage.contracts import (
     ProfitabilityRequest,
     ProfitabilityResult,
     ProfitabilityStatus,
+    ProfitabilityToolResult,
     ProfitScenarioResult,
     SaleScenario,
     ScenarioSide,
@@ -197,6 +198,7 @@ def _build_input_quality(request: ProfitabilityRequest) -> InputQualitySummary:
     ]
 
     return InputQualitySummary(
+        human_observed_inputs=_deduplicate(classified[InputBasis.HUMAN_OBSERVED]),
         verified_inputs=_deduplicate(classified[InputBasis.VERIFIED]),
         calculated_inputs=_deduplicate(classified[InputBasis.CALCULATED]),
         estimated_inputs=_deduplicate(classified[InputBasis.ESTIMATED]),
@@ -370,8 +372,33 @@ def _calculate_profitability(request: ProfitabilityRequest) -> ProfitabilityResu
     )
 
 
-@function_tool(output_type=ProfitabilityResult)
-def calculate_profitability(request: ProfitabilityRequest) -> ProfitabilityResult:
+def profitability_tool_error(
+    _context: RunContextWrapper[None], error: Exception
+) -> str:
+    return ProfitabilityToolResult(
+        success=False,
+        result=None,
+        error=(
+            f"{error}. Correct the Profitability request and retry when appropriate; "
+            "do not invent missing economic inputs. If one economic input is both "
+            "unresolved and an assumed zero-valued cost, remove the zero placeholder "
+            "and preserve the unknown."
+        ),
+    ).model_dump_json()
+
+
+@function_tool(
+    output_type=ProfitabilityToolResult,
+    failure_error_function=profitability_tool_error,
+)
+def calculate_profitability(request: ProfitabilityRequest) -> ProfitabilityToolResult:
     """Calculate deterministic economics for one acquisition and sale scenario pairing."""
     print("[debug] Profitability Tool called")
-    return _calculate_profitability(request)
+    print(f"[debug] Profitability validated request: {request.model_dump_json()}")
+    result = _calculate_profitability(request)
+    print(f"[debug] Profitability deterministic result: {result.model_dump_json()}")
+    return ProfitabilityToolResult(
+        success=True,
+        result=result,
+        error=None,
+    )
