@@ -2,6 +2,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -16,21 +17,24 @@ from arbitrage.contracts import (
     CandidateLifecycleStatus,
     CandidateRecord,
     CandidateSource,
+    EvaluationArtifact,
+    EvaluationArtifactType,
     EvaluationStatus,
     EvaluationTrigger,
     ProductIdentity,
     ProfitabilityResult,
+    ProfitabilityToolResult,
     ResaleResult,
     SourcingResult,
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "arbitrage.db"
 TERMINAL_EVALUATION_STATUSES = {
     EvaluationStatus.COMPLETED,
-    EvaluationStatus.INSUFFICIENT_EVIDENCE,
     EvaluationStatus.FAILED,
+    EvaluationStatus.CANCELLED,
 }
 
 
@@ -50,8 +54,26 @@ class InvalidStateTransitionError(PersistenceError):
     pass
 
 
+class SubstantiveCompletionPrerequisiteError(InvalidStateTransitionError):
+    pass
+
+
+class ViableFinalizationPrerequisiteError(SubstantiveCompletionPrerequisiteError):
+    pass
+
+
+class ProfitabilityCorrectionRequiredError(SubstantiveCompletionPrerequisiteError):
+    pass
+
+
 class PersistenceDataError(PersistenceError):
     pass
+
+
+class ProfitabilityArtifactState(str, Enum):
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    ONLY_FAILED = "ONLY_FAILED"
+    SUCCESS_EXISTS = "SUCCESS_EXISTS"
 
 
 def _utc_now() -> datetime:
@@ -113,9 +135,9 @@ def initialize_database(database_path: str | Path = DEFAULT_DATABASE_PATH) -> No
                 raise UnsupportedSchemaVersionError(
                     f"Invalid stored schema version: {row['value']!r}"
                 ) from exc
-            if stored_version != SCHEMA_VERSION:
+            if stored_version not in {1, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(
-                    f"Unsupported schema version {stored_version}; expected {SCHEMA_VERSION}"
+                    f"Unsupported schema version {stored_version}; expected 1 or {SCHEMA_VERSION}"
                 )
 
         connection.execute(
@@ -168,9 +190,53 @@ def initialize_database(database_path: str | Path = DEFAULT_DATABASE_PATH) -> No
             ON candidate_evaluations(candidate_id, started_at, evaluation_id)
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evaluation_artifacts (
+                artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                evaluation_id TEXT NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                artifact_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                context_json TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(evaluation_id, sequence_number),
+                FOREIGN KEY (evaluation_id) REFERENCES candidate_evaluations(evaluation_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_artifacts_evaluation_sequence
+            ON evaluation_artifacts(evaluation_id, sequence_number)
+            """
+        )
         if row is None:
             connection.execute(
                 "INSERT INTO schema_metadata(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+        elif stored_version == 1:
+            connection.execute(
+                """
+                UPDATE candidate_evaluations
+                SET status = CASE status
+                    WHEN 'AWAITING_HUMAN_INPUT' THEN 'WAITING_FOR_INPUT'
+                    WHEN 'INSUFFICIENT_EVIDENCE' THEN 'COMPLETED'
+                    ELSE status END
+                """
+            )
+            connection.execute(
+                """
+                UPDATE candidates
+                SET lifecycle_status = CASE lifecycle_status
+                    WHEN 'AWAITING_HUMAN_INPUT' THEN 'INVESTIGATING'
+                    WHEN 'EVALUATED' THEN 'INVESTIGATING'
+                    ELSE lifecycle_status END
+                """
+            )
+            connection.execute(
+                "UPDATE schema_metadata SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),
             )
 
@@ -258,6 +324,23 @@ def _evaluation_from_row(row: sqlite3.Row) -> CandidateEvaluation:
     except (ValidationError, ValueError, TypeError) as exc:
         raise PersistenceDataError(
             f"Invalid stored CandidateEvaluation {row['evaluation_id']}: {exc}"
+        ) from exc
+
+
+def _artifact_from_row(row: sqlite3.Row) -> EvaluationArtifact:
+    try:
+        return EvaluationArtifact(
+            artifact_id=row["artifact_id"],
+            evaluation_id=row["evaluation_id"],
+            sequence_number=row["sequence_number"],
+            artifact_type=row["artifact_type"],
+            payload_json=row["payload_json"],
+            context_json=row["context_json"],
+            created_at=row["created_at"],
+        )
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise PersistenceDataError(
+            f"Invalid stored EvaluationArtifact {row['artifact_id']}: {exc}"
         ) from exc
 
 
@@ -508,12 +591,145 @@ class CandidateRepository:
             ).fetchall()
         return [_evaluation_from_row(row) for row in rows]
 
+    def append_evaluation_artifact(
+        self,
+        evaluation_id: str,
+        *,
+        artifact_type: EvaluationArtifactType,
+        payload_json: str,
+        context_json: str | None = None,
+    ) -> EvaluationArtifact:
+        try:
+            json.loads(payload_json)
+            if context_json is not None:
+                json.loads(context_json)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("artifact payload and context must be valid JSON") from exc
+
+        latest_column: str | None = None
+        latest_value: str | None = None
+        if artifact_type == EvaluationArtifactType.SOURCING:
+            SourcingResult.model_validate_json(payload_json)
+            latest_column = "sourcing_result_json"
+            latest_value = payload_json
+        elif artifact_type == EvaluationArtifactType.RESALE:
+            ResaleResult.model_validate_json(payload_json)
+            latest_column = "resale_result_json"
+            latest_value = payload_json
+        elif artifact_type == EvaluationArtifactType.PROFITABILITY:
+            envelope = ProfitabilityToolResult.model_validate_json(payload_json)
+            if envelope.success and envelope.result is not None:
+                latest_column = "profitability_result_json"
+                latest_value = envelope.result.model_dump_json()
+
+        now = _utc_now()
+        with _connection(self.database_path) as connection:
+            evaluation = connection.execute(
+                "SELECT status FROM candidate_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone()
+            if evaluation is None:
+                raise RecordNotFoundError(f"Evaluation not found: {evaluation_id}")
+            if EvaluationStatus(evaluation["status"]) in TERMINAL_EVALUATION_STATUSES:
+                raise InvalidStateTransitionError(
+                    "Cannot capture artifacts for a terminal Evaluation"
+                )
+            sequence = connection.execute(
+                """
+                SELECT COALESCE(MAX(sequence_number), 0) + 1
+                FROM evaluation_artifacts WHERE evaluation_id = ?
+                """,
+                (evaluation_id,),
+            ).fetchone()[0]
+            cursor = connection.execute(
+                """
+                INSERT INTO evaluation_artifacts(
+                    evaluation_id, sequence_number, artifact_type,
+                    payload_json, context_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evaluation_id,
+                    sequence,
+                    artifact_type.value,
+                    payload_json,
+                    context_json,
+                    _timestamp(now),
+                ),
+            )
+            if latest_column is not None:
+                connection.execute(
+                    f"UPDATE candidate_evaluations SET {latest_column} = ? WHERE evaluation_id = ?",
+                    (latest_value, evaluation_id),
+                )
+            artifact_id = cursor.lastrowid
+        assert artifact_id is not None
+        with _connection(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM evaluation_artifacts WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchone()
+        assert row is not None
+        return _artifact_from_row(row)
+
+    def list_evaluation_artifacts(
+        self, evaluation_id: str
+    ) -> list[EvaluationArtifact]:
+        with _connection(self.database_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM evaluation_artifacts
+                WHERE evaluation_id = ?
+                ORDER BY sequence_number ASC
+                """,
+                (evaluation_id,),
+            ).fetchall()
+        return [_artifact_from_row(row) for row in rows]
+
+    def profitability_artifact_state(
+        self, evaluation_id: str
+    ) -> ProfitabilityArtifactState:
+        with _connection(self.database_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM candidate_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone() is None:
+                raise RecordNotFoundError(f"Evaluation not found: {evaluation_id}")
+            return self._profitability_artifact_state(
+                connection, evaluation_id
+            )
+
+    @staticmethod
+    def _profitability_artifact_state(
+        connection: sqlite3.Connection, evaluation_id: str
+    ) -> ProfitabilityArtifactState:
+        rows = connection.execute(
+            """
+            SELECT payload_json FROM evaluation_artifacts
+            WHERE evaluation_id = ? AND artifact_type = ?
+            ORDER BY sequence_number ASC
+            """,
+            (evaluation_id, EvaluationArtifactType.PROFITABILITY.value),
+        ).fetchall()
+        if not rows:
+            return ProfitabilityArtifactState.NOT_ATTEMPTED
+        for row in rows:
+            try:
+                result = ProfitabilityToolResult.model_validate_json(row["payload_json"])
+            except (ValidationError, ValueError, TypeError) as exc:
+                raise PersistenceDataError(
+                    f"Invalid stored Profitability artifact for Evaluation {evaluation_id}: {exc}"
+                ) from exc
+            if result.success and result.result is not None:
+                return ProfitabilityArtifactState.SUCCESS_EXISTS
+        return ProfitabilityArtifactState.ONLY_FAILED
+
     def update_evaluation_status(
         self, evaluation_id: str, status: EvaluationStatus
     ) -> CandidateEvaluation:
         if status not in {
             EvaluationStatus.IN_PROGRESS,
-            EvaluationStatus.AWAITING_HUMAN_INPUT,
+            EvaluationStatus.WAITING_FOR_INPUT,
         }:
             raise InvalidStateTransitionError(
                 "update_evaluation_status accepts only nonterminal statuses"
@@ -530,18 +746,14 @@ class CandidateRepository:
             if current.status in TERMINAL_EVALUATION_STATUSES:
                 raise InvalidStateTransitionError("Terminal evaluations are immutable")
             allowed = {
-                EvaluationStatus.IN_PROGRESS: EvaluationStatus.AWAITING_HUMAN_INPUT,
-                EvaluationStatus.AWAITING_HUMAN_INPUT: EvaluationStatus.IN_PROGRESS,
+                EvaluationStatus.IN_PROGRESS: EvaluationStatus.WAITING_FOR_INPUT,
+                EvaluationStatus.WAITING_FOR_INPUT: EvaluationStatus.IN_PROGRESS,
             }
             if allowed[current.status] != status:
                 raise InvalidStateTransitionError(
                     f"Invalid transition from {current.status.value} to {status.value}"
                 )
-            candidate_status = (
-                CandidateLifecycleStatus.AWAITING_HUMAN_INPUT
-                if status == EvaluationStatus.AWAITING_HUMAN_INPUT
-                else CandidateLifecycleStatus.INVESTIGATING
-            )
+            candidate_status = CandidateLifecycleStatus.INVESTIGATING
             connection.execute(
                 "UPDATE candidate_evaluations SET status = ? WHERE evaluation_id = ?",
                 (status.value, evaluation_id),
@@ -566,6 +778,7 @@ class CandidateRepository:
         sourcing_result: SourcingResult | None = None,
         resale_result: ResaleResult | None = None,
         profitability_result: ProfitabilityResult | None = None,
+        candidate_status: CandidateLifecycleStatus | None = None,
         assumptions: list[str] | None = None,
         uncertainties: list[str] | None = None,
         manager_notes: str | None = None,
@@ -583,6 +796,50 @@ class CandidateRepository:
             current = _evaluation_from_row(row)
             if current.status in TERMINAL_EVALUATION_STATUSES:
                 raise InvalidStateTransitionError("Terminal evaluations are immutable")
+            if current.status == EvaluationStatus.WAITING_FOR_INPUT and (
+                status == EvaluationStatus.CANCELLED
+            ):
+                pass
+            elif current.status != EvaluationStatus.IN_PROGRESS:
+                raise InvalidStateTransitionError(
+                    "Only an IN_PROGRESS Evaluation may finish, except that a "
+                    "WAITING_FOR_INPUT Evaluation may be CANCELLED"
+                )
+            allowed_candidate_statuses = {
+                EvaluationStatus.COMPLETED: {
+                    CandidateLifecycleStatus.VIABLE,
+                    CandidateLifecycleStatus.REJECTED,
+                    CandidateLifecycleStatus.INVESTIGATING,
+                },
+                EvaluationStatus.FAILED: {CandidateLifecycleStatus.INVESTIGATING},
+                EvaluationStatus.CANCELLED: {
+                    CandidateLifecycleStatus.INVESTIGATING,
+                    CandidateLifecycleStatus.CLOSED,
+                },
+            }
+            final_candidate_status = candidate_status or CandidateLifecycleStatus.INVESTIGATING
+            if final_candidate_status not in allowed_candidate_statuses[status]:
+                raise InvalidStateTransitionError(
+                    f"{status.value} cannot produce Candidate {final_candidate_status.value}"
+                )
+            if status == EvaluationStatus.COMPLETED:
+                profitability_state = self._profitability_artifact_state(
+                    connection, evaluation_id
+                )
+                if profitability_state == ProfitabilityArtifactState.ONLY_FAILED:
+                    raise ProfitabilityCorrectionRequiredError(
+                        "Profitability was attempted but no invocation completed "
+                        "successfully for the current Evaluation"
+                    )
+                if (
+                    final_candidate_status == CandidateLifecycleStatus.VIABLE
+                    and profitability_state
+                    != ProfitabilityArtifactState.SUCCESS_EXISTS
+                ):
+                    raise ViableFinalizationPrerequisiteError(
+                        "VIABLE requires at least one successful Profitability result "
+                        "for the current Evaluation"
+                    )
             final_assumptions = current.assumptions if assumptions is None else list(assumptions)
             final_uncertainties = (
                 current.uncertainties if uncertainties is None else list(uncertainties)
@@ -603,19 +860,16 @@ class CandidateRepository:
                     status.value,
                     _timestamp(now),
                     _model_json(final_intake),
-                    _model_json(sourcing_result),
-                    _model_json(resale_result),
-                    _model_json(profitability_result),
+                    _model_json(sourcing_result or current.sourcing_result),
+                    _model_json(resale_result or current.resale_result),
+                    _model_json(profitability_result or current.profitability_result),
                     json.dumps(final_assumptions),
                     json.dumps(final_uncertainties),
                     final_notes,
                     evaluation_id,
                 ),
             )
-            if status in {
-                EvaluationStatus.COMPLETED,
-                EvaluationStatus.INSUFFICIENT_EVIDENCE,
-            }:
+            if status == EvaluationStatus.COMPLETED:
                 connection.execute(
                     """
                     UPDATE candidates
@@ -623,29 +877,20 @@ class CandidateRepository:
                     WHERE candidate_id = ?
                     """,
                     (
-                        CandidateLifecycleStatus.EVALUATED.value,
+                        final_candidate_status.value,
                         _timestamp(now),
                         evaluation_id,
                         current.candidate_id,
                     ),
                 )
             else:
-                candidate = connection.execute(
-                    "SELECT latest_evaluation_id FROM candidates WHERE candidate_id = ?",
-                    (current.candidate_id,),
-                ).fetchone()
-                candidate_status = (
-                    CandidateLifecycleStatus.EVALUATED
-                    if candidate["latest_evaluation_id"] is not None
-                    else CandidateLifecycleStatus.INVESTIGATING
-                )
                 connection.execute(
                     """
                     UPDATE candidates SET lifecycle_status = ?, updated_at = ?
                     WHERE candidate_id = ?
                     """,
                     (
-                        candidate_status.value,
+                        final_candidate_status.value,
                         _timestamp(now),
                         current.candidate_id,
                     ),
@@ -669,11 +914,12 @@ class CandidateRepository:
             if row is None:
                 raise RecordNotFoundError(f"Candidate not found: {candidate_id}")
             candidate = _candidate_from_row(row)
-            if status == CandidateLifecycleStatus.EVALUATED and (
-                candidate.latest_evaluation_id is None
-            ):
+            if status in {
+                CandidateLifecycleStatus.VIABLE,
+                CandidateLifecycleStatus.REJECTED,
+            } and candidate.latest_evaluation_id is None:
                 raise InvalidStateTransitionError(
-                    "EVALUATED requires a completed or insufficient-evidence evaluation"
+                    f"{status.value} requires a completed Evaluation"
                 )
             connection.execute(
                 """

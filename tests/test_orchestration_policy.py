@@ -1,5 +1,6 @@
 import unittest
 
+from arbitrage.contracts import ManagerEvaluationJudgment
 from arbitrage.orchestration import agent, lead_qualifier
 
 
@@ -25,10 +26,9 @@ class OrchestrationPolicyTests(unittest.TestCase):
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
-                "update_candidate_evaluation",
-                "finish_candidate_evaluation",
             ],
         )
+        self.assertIs(agent.output_type, ManagerEvaluationJudgment)
 
     def test_lead_qualifier_has_only_limited_sourcing(self):
         self.assertEqual(

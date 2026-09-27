@@ -19,6 +19,7 @@ from arbitrage.contracts import (
     CandidateRecord,
     CandidateSource,
     CandidateSourceKind,
+    EvaluationArtifactType,
     EvaluationStatus,
     EvaluationTrigger,
     HumanAcquisitionInput,
@@ -27,6 +28,7 @@ from arbitrage.contracts import (
     MatchQuality,
     ProductCondition,
     ProductIdentity,
+    ProfitabilityToolResult,
     ResaleResult,
     SourcingResult,
 )
@@ -50,6 +52,17 @@ class CandidatePersistenceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def append_successful_profitability(self, evaluation_id: str) -> None:
+        self.repository.append_evaluation_artifact(
+            evaluation_id,
+            artifact_type=EvaluationArtifactType.PROFITABILITY,
+            payload_json=ProfitabilityToolResult(
+                success=True,
+                result=self.profitability_result(),
+                error=None,
+            ).model_dump_json(),
+        )
 
     @staticmethod
     def identity(model: str = "FD2722-001", variant: str = "Men's size 10") -> ProductIdentity:
@@ -186,7 +199,7 @@ class CandidatePersistenceTests(unittest.TestCase):
             version = connection.execute(
                 "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
             ).fetchone()[0]
-        self.assertEqual(version, "1")
+        self.assertEqual(version, "2")
 
     def test_unsupported_schema_version_fails_clearly(self):
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
@@ -277,12 +290,12 @@ class CandidatePersistenceTests(unittest.TestCase):
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
         waiting = self.repository.update_evaluation_status(
-            evaluation.evaluation_id, EvaluationStatus.AWAITING_HUMAN_INPUT
+            evaluation.evaluation_id, EvaluationStatus.WAITING_FOR_INPUT
         )
-        self.assertEqual(waiting.status, EvaluationStatus.AWAITING_HUMAN_INPUT)
+        self.assertEqual(waiting.status, EvaluationStatus.WAITING_FOR_INPUT)
         self.assertEqual(
             self.repository.get_candidate(candidate.candidate_id).lifecycle_status,
-            CandidateLifecycleStatus.AWAITING_HUMAN_INPUT,
+            CandidateLifecycleStatus.INVESTIGATING,
         )
         resumed = self.repository.update_evaluation_status(
             evaluation.evaluation_id, EvaluationStatus.IN_PROGRESS
@@ -298,15 +311,17 @@ class CandidatePersistenceTests(unittest.TestCase):
         evaluation = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_successful_profitability(evaluation.evaluation_id)
         completed = self.repository.complete_evaluation(
             evaluation.evaluation_id,
             status=EvaluationStatus.COMPLETED,
+            candidate_status=CandidateLifecycleStatus.VIABLE,
             profitability_result=self.profitability_result(),
         )
         record = self.repository.get_candidate(candidate.candidate_id)
         self.assertEqual(completed.status, EvaluationStatus.COMPLETED)
         self.assertIsNotNone(completed.completed_at)
-        self.assertEqual(record.lifecycle_status, CandidateLifecycleStatus.EVALUATED)
+        self.assertEqual(record.lifecycle_status, CandidateLifecycleStatus.VIABLE)
         self.assertEqual(record.latest_evaluation_id, completed.evaluation_id)
         with self.assertRaises(InvalidStateTransitionError):
             self.repository.update_evaluation_status(
@@ -322,8 +337,11 @@ class CandidatePersistenceTests(unittest.TestCase):
         first = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_successful_profitability(first.evaluation_id)
         first = self.repository.complete_evaluation(
-            first.evaluation_id, status=EvaluationStatus.COMPLETED
+            first.evaluation_id,
+            status=EvaluationStatus.COMPLETED,
+            candidate_status=CandidateLifecycleStatus.VIABLE,
         )
         second = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.MANUAL_REFRESH
@@ -333,7 +351,9 @@ class CandidatePersistenceTests(unittest.TestCase):
             first.evaluation_id,
         )
         second = self.repository.complete_evaluation(
-            second.evaluation_id, status=EvaluationStatus.INSUFFICIENT_EVIDENCE
+            second.evaluation_id,
+            status=EvaluationStatus.COMPLETED,
+            candidate_status=CandidateLifecycleStatus.INVESTIGATING,
         )
         history = self.repository.list_evaluations(candidate.candidate_id)
         self.assertEqual([item.evaluation_id for item in history], [first.evaluation_id, second.evaluation_id])
@@ -361,15 +381,18 @@ class CandidatePersistenceTests(unittest.TestCase):
         success = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_successful_profitability(success.evaluation_id)
         success = self.repository.complete_evaluation(
-            success.evaluation_id, status=EvaluationStatus.COMPLETED
+            success.evaluation_id,
+            status=EvaluationStatus.COMPLETED,
+            candidate_status=CandidateLifecycleStatus.VIABLE,
         )
         failed = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.MANUAL_REFRESH
         )
         self.repository.complete_evaluation(failed.evaluation_id, status=EvaluationStatus.FAILED)
         record = self.repository.get_candidate(candidate.candidate_id)
-        self.assertEqual(record.lifecycle_status, CandidateLifecycleStatus.EVALUATED)
+        self.assertEqual(record.lifecycle_status, CandidateLifecycleStatus.INVESTIGATING)
         self.assertEqual(record.latest_evaluation_id, success.evaluation_id)
 
     def test_structured_values_round_trip(self):
@@ -513,7 +536,7 @@ class CandidatePersistenceTests(unittest.TestCase):
         self.assertEqual(closed.resale_destination, candidate.resale_destination)
         with self.assertRaises(InvalidStateTransitionError):
             self.repository.update_candidate_status(
-                candidate.candidate_id, CandidateLifecycleStatus.EVALUATED
+            candidate.candidate_id, CandidateLifecycleStatus.VIABLE
             )
 
 

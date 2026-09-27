@@ -6,8 +6,13 @@ from agents import RunConfig, Runner, SQLiteSession
 from dotenv import load_dotenv
 
 from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
-from arbitrage.contracts import CandidateWorkflowResult, LeadDecision
+from arbitrage.contracts import (
+    CandidateWorkflowResult,
+    LeadDecision,
+    ManagerEvaluationJudgment,
+)
 from arbitrage.coordinator import ArbitrageCoordinator
+from arbitrage.evaluation_capture import EvaluationCaptureHooks
 from arbitrage.persistence import CandidateRepository
 
 
@@ -86,18 +91,24 @@ def main() -> None:
             )
             print(f"[debug] Lead decision: {decision.disposition.value}")
 
-            def evaluate(_workflow_result: CandidateWorkflowResult) -> str:
+            def evaluate(
+                _workflow_result: CandidateWorkflowResult,
+                continuation: str | None,
+            ) -> ManagerEvaluationJudgment:
                 print("[debug] Substantive evaluation started")
                 result = Runner.run_sync(
                     agent,
-                    prompt,
+                    prompt if continuation is None else continuation,
                     context=context,
                     session=session,
                     run_config=run_config,
+                    hooks=EvaluationCaptureHooks(),
                 )
-                return str(result.final_output)
+                return result.final_output_as(
+                    ManagerEvaluationJudgment, raise_if_incorrect_type=True
+                )
 
-            outcome = coordinator.coordinate(decision, evaluate)
+            outcome = coordinator.coordinate(decision, prompt, evaluate)
             if not outcome.proceeded:
                 record_application_response(session, prompt, outcome.response)
             print(f"Assistant: {outcome.response}")

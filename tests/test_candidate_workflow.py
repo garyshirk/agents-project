@@ -265,13 +265,13 @@ class CandidateWorkflowTests(unittest.TestCase):
         started = self.workflow.start_candidate_evaluation(self.start_request())
         waiting = self.workflow.update_candidate_evaluation(
             UpdateCandidateEvaluationRequest(
-                action=WorkflowEvaluationAction.AWAIT_HUMAN_INPUT
+                action=WorkflowEvaluationAction.WAIT_FOR_INPUT
             )
         )
         self.assertEqual(waiting.candidate_id, started.candidate_id)
         self.assertEqual(waiting.evaluation_id, started.evaluation_id)
-        self.assertEqual(waiting.candidate_lifecycle, CandidateLifecycleStatus.AWAITING_HUMAN_INPUT)
-        self.assertEqual(waiting.evaluation_status, EvaluationStatus.AWAITING_HUMAN_INPUT)
+        self.assertEqual(waiting.candidate_lifecycle, CandidateLifecycleStatus.INVESTIGATING)
+        self.assertEqual(waiting.evaluation_status, EvaluationStatus.WAITING_FOR_INPUT)
         resumed = self.workflow.update_candidate_evaluation(
             UpdateCandidateEvaluationRequest(action=WorkflowEvaluationAction.RESUME)
         )
@@ -288,7 +288,7 @@ class CandidateWorkflowTests(unittest.TestCase):
         evaluation = self.repository.get_evaluation(started.evaluation_id)
         self.assertFalse(result.active)
         self.assertFalse(self.workflow.active.is_active)
-        self.assertEqual(candidate.lifecycle_status, CandidateLifecycleStatus.EVALUATED)
+        self.assertEqual(candidate.lifecycle_status, CandidateLifecycleStatus.INVESTIGATING)
         self.assertEqual(candidate.latest_evaluation_id, evaluation.evaluation_id)
         self.assertEqual(evaluation.status, EvaluationStatus.COMPLETED)
         self.assertEqual(evaluation.intake_snapshot, request.intake_snapshot)
@@ -296,13 +296,13 @@ class CandidateWorkflowTests(unittest.TestCase):
         self.assertEqual(evaluation.resale_result, request.resale_result)
         self.assertEqual(evaluation.profitability_result, request.profitability_result)
 
-    def test_insufficient_evidence_does_not_require_profitability(self):
+    def test_inconclusive_completion_does_not_require_profitability(self):
         started = self.workflow.start_candidate_evaluation(self.start_request())
-        request = self.finish_request(EvaluationStatus.INSUFFICIENT_EVIDENCE)
+        request = self.finish_request(EvaluationStatus.COMPLETED)
         request.profitability_result = None
         result = self.workflow.finish_candidate_evaluation(request)
         evaluation = self.repository.get_evaluation(started.evaluation_id)
-        self.assertEqual(result.evaluation_status, EvaluationStatus.INSUFFICIENT_EVIDENCE)
+        self.assertEqual(result.evaluation_status, EvaluationStatus.COMPLETED)
         self.assertIsNone(evaluation.profitability_result)
         self.assertEqual(
             self.repository.get_candidate(started.candidate_id).latest_evaluation_id,
@@ -349,7 +349,7 @@ class CandidateWorkflowTests(unittest.TestCase):
         started = self.workflow.start_candidate_evaluation(self.start_request())
         self.workflow.update_candidate_evaluation(
             UpdateCandidateEvaluationRequest(
-                action=WorkflowEvaluationAction.AWAIT_HUMAN_INPUT
+                action=WorkflowEvaluationAction.WAIT_FOR_INPUT
             )
         )
         with self.assertRaises(CandidateWorkflowError):
@@ -357,7 +357,7 @@ class CandidateWorkflowTests(unittest.TestCase):
                 self.start_request(destination=self.destination("Facebook Marketplace"))
             )
         evaluation = self.repository.get_evaluation(started.evaluation_id)
-        self.assertEqual(evaluation.status, EvaluationStatus.AWAITING_HUMAN_INPUT)
+        self.assertEqual(evaluation.status, EvaluationStatus.WAITING_FOR_INPUT)
         self.assertEqual(self.workflow.active.evaluation_id, started.evaluation_id)
 
     def test_separate_candidates_after_completion_preserve_first_history(self):

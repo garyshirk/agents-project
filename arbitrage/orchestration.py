@@ -2,14 +2,11 @@ from agents import Agent, handoff
 
 from arbitrage.contracts import (
     LeadDecision,
+    ManagerEvaluationJudgment,
     ResaleRequest,
     ResaleResult,
     SourcingRequest,
     SourcingResult,
-)
-from arbitrage.candidate_workflow import (
-    finish_candidate_evaluation,
-    update_candidate_evaluation,
 )
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
@@ -173,12 +170,15 @@ agent = Agent(
         "match or deduplicate them, or reuse them automatically. If a durable Evaluation is active, preserve it and "
         "do not start another durable Candidate until the active Evaluation has reached a legitimate terminal result; "
         "never silently mark unfinished work COMPLETED. Before Candidate creation, a Lead remains ephemeral. Once a "
-        "Candidate exists, use update_candidate_evaluation to enter AWAITING_HUMAN_INPUT before asking for material, "
-        "reasonably obtainable human information, and RESUME the same Candidate and Evaluation when the answer arrives. "
-        "Do not persist every conversational utterance. Use finish_candidate_evaluation once for a legitimate "
-        "COMPLETED, INSUFFICIENT_EVIDENCE, or FAILED outcome, including the structured evidence that actually exists; "
-        "not all specialist results are required. Candidate and Evaluation IDs are internal bookkeeping and should "
-        "not clutter normal responses. "
+        "Candidate exists, the application deterministically captures human input, specialist results, "
+        "Profitability results, Evaluation status, and Candidate lifecycle; these are not Manager tools. Candidate "
+        "and Evaluation IDs are internal bookkeeping and should not clutter normal responses. Return one structured "
+        "ManagerEvaluationJudgment after substantive work. Use WAITING_FOR_INPUT with INCONCLUSIVE when one targeted, "
+        "material human answer is needed, COMPLETED with VIABLE, REJECTED, or INCONCLUSIVE for a finished research "
+        "judgment, and CANCELLED only when cancellation is genuinely intended. Use CLOSED with CANCELLED only when the "
+        "human explicitly intends to close the Candidate. Put the complete normal human-readable answer or targeted "
+        "question in user_response, and faithfully summarize assumptions, uncertainties, and internal rationale in "
+        "the other judgment fields. Do not make a second response merely to format the persisted outcome. "
         "Decide dynamically what research is needed; do not blindly follow a fixed workflow. You may "
         "call either specialist dynamically, call either more than once, stop when evidence is inadequate, "
         "or ask the human for missing information. Use "
@@ -213,7 +213,14 @@ agent = Agent(
         "additional specialist research when it could reasonably resolve an important uncertainty, and "
         "explicitly report insufficient evidence when it cannot. calculate_profitability returns a structured "
         "tool outcome: use its result only when success is true, and correct or reconsider the request when "
-        "success is false. Use calculate_profitability only after "
+        "success is false. VIABLE requires at least one calculate_profitability result with success=true and a "
+        "non-null result for the current Evaluation. If calculate_profitability returns success=false, inspect "
+        "the error, correct the request, and retry when possible. Never treat a failed Profitability invocation "
+        "as a Profitability conclusion or convert it into a substantive INCONCLUSIVE judgment merely to finish "
+        "the Evaluation. A success=false invocation is different from success=true with result.status="
+        "INSUFFICIENT_INPUTS; the latter is a successful deterministic analysis and may legitimately inform an "
+        "INCONCLUSIVE judgment. Never declare VIABLE based only on gross spread. Use "
+        "calculate_profitability only after "
         "you have enough structured economic information to construct a defensible request. Use it once "
         "per acquisition and sale pairing, and call it multiple times when comparing multiple sale channels. "
         "Construct Profitability requests only from researched evidence, human-provided facts, deterministic "
@@ -293,7 +300,6 @@ agent = Agent(
         sourcing_agent_tool,
         resale_agent_tool,
         calculate_profitability,
-        update_candidate_evaluation,
-        finish_candidate_evaluation,
     ],
+    output_type=ManagerEvaluationJudgment,
 )

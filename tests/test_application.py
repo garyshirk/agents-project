@@ -15,7 +15,7 @@ from arbitrage.application import (
     qualification_input,
     record_application_response,
 )
-from arbitrage.persistence import CandidateRepository
+from arbitrage.persistence import DEFAULT_DATABASE_PATH, CandidateRepository
 
 
 class ApplicationConfigurationTests(unittest.TestCase):
@@ -34,7 +34,13 @@ class ApplicationConfigurationTests(unittest.TestCase):
 
         project_root = Path(__file__).resolve().parent.parent
         self.assertEqual(SESSIONS_DATABASE_PATH, project_root / "sessions.db")
-        self.assertEqual(CandidateRepository().database_path, project_root / "arbitrage.db")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_database_path = Path(directory) / "arbitrage.db"
+            self.assertEqual(
+                CandidateRepository(temporary_database_path).database_path,
+                temporary_database_path,
+            )
+        self.assertEqual(DEFAULT_DATABASE_PATH, project_root / "arbitrage.db")
 
     def test_qualification_uses_history_without_persisting_internal_input(self):
         with tempfile.TemporaryDirectory() as directory:

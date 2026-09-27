@@ -692,8 +692,8 @@ class CandidateDestination(BaseModel):
 
 class CandidateLifecycleStatus(str, Enum):
     INVESTIGATING = "INVESTIGATING"
-    AWAITING_HUMAN_INPUT = "AWAITING_HUMAN_INPUT"
-    EVALUATED = "EVALUATED"
+    VIABLE = "VIABLE"
+    REJECTED = "REJECTED"
     CLOSED = "CLOSED"
 
 
@@ -732,10 +732,10 @@ class EvaluationTrigger(str, Enum):
 
 class EvaluationStatus(str, Enum):
     IN_PROGRESS = "IN_PROGRESS"
-    AWAITING_HUMAN_INPUT = "AWAITING_HUMAN_INPUT"
+    WAITING_FOR_INPUT = "WAITING_FOR_INPUT"
     COMPLETED = "COMPLETED"
-    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class CandidateEvaluation(BaseModel):
@@ -764,8 +764,8 @@ class CandidateEvaluation(BaseModel):
     def validate_status_and_timestamps(self) -> "CandidateEvaluation":
         terminal = {
             EvaluationStatus.COMPLETED,
-            EvaluationStatus.INSUFFICIENT_EVIDENCE,
             EvaluationStatus.FAILED,
+            EvaluationStatus.CANCELLED,
         }
         if self.completed_at is not None and self.completed_at < self.started_at:
             raise ValueError("completed_at cannot precede started_at")
@@ -777,8 +777,72 @@ class CandidateEvaluation(BaseModel):
 
 
 class WorkflowEvaluationAction(str, Enum):
-    AWAIT_HUMAN_INPUT = "AWAIT_HUMAN_INPUT"
+    WAIT_FOR_INPUT = "WAIT_FOR_INPUT"
     RESUME = "RESUME"
+
+
+class EvaluationArtifactType(str, Enum):
+    HUMAN_INPUT = "HUMAN_INPUT"
+    SOURCING = "SOURCING"
+    RESALE = "RESALE"
+    PROFITABILITY = "PROFITABILITY"
+
+
+class EvaluationArtifact(BaseModel):
+    artifact_id: int
+    evaluation_id: str
+    sequence_number: int = Field(ge=1)
+    artifact_type: EvaluationArtifactType
+    payload_json: str
+    context_json: str | None
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_artifact_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("created_at must be timezone-aware")
+        return value
+
+
+class ManagerEvaluationOutcome(str, Enum):
+    COMPLETED = "COMPLETED"
+    WAITING_FOR_INPUT = "WAITING_FOR_INPUT"
+    CANCELLED = "CANCELLED"
+
+
+class CandidateConclusion(str, Enum):
+    VIABLE = "VIABLE"
+    REJECTED = "REJECTED"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    CLOSED = "CLOSED"
+
+
+class ManagerEvaluationJudgment(BaseModel):
+    evaluation_outcome: ManagerEvaluationOutcome
+    candidate_conclusion: CandidateConclusion
+    assumptions: list[str]
+    uncertainties: list[str]
+    manager_notes: str | None
+    user_response: str
+
+    @model_validator(mode="after")
+    def validate_judgment(self) -> "ManagerEvaluationJudgment":
+        if not self.user_response.strip():
+            raise ValueError("user_response must not be blank")
+        if self.evaluation_outcome == ManagerEvaluationOutcome.COMPLETED:
+            if self.candidate_conclusion == CandidateConclusion.CLOSED:
+                raise ValueError("COMPLETED cannot close the Candidate")
+        elif self.evaluation_outcome == ManagerEvaluationOutcome.WAITING_FOR_INPUT:
+            if self.candidate_conclusion != CandidateConclusion.INCONCLUSIVE:
+                raise ValueError("WAITING_FOR_INPUT requires INCONCLUSIVE")
+        elif self.evaluation_outcome == ManagerEvaluationOutcome.CANCELLED:
+            if self.candidate_conclusion not in {
+                CandidateConclusion.INCONCLUSIVE,
+                CandidateConclusion.CLOSED,
+            }:
+                raise ValueError("CANCELLED requires INCONCLUSIVE or CLOSED")
+        return self
 
 
 class StartCandidateEvaluationRequest(BaseModel):
@@ -812,8 +876,8 @@ class FinishCandidateEvaluationRequest(BaseModel):
     def validate_terminal_status(self) -> "FinishCandidateEvaluationRequest":
         if self.status not in {
             EvaluationStatus.COMPLETED,
-            EvaluationStatus.INSUFFICIENT_EVIDENCE,
             EvaluationStatus.FAILED,
+            EvaluationStatus.CANCELLED,
         }:
             raise ValueError("finish requires a terminal EvaluationStatus")
         return self
