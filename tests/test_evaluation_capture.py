@@ -6,7 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
-from arbitrage.contracts import EvaluationArtifactType, ProfitabilityToolResult
+from arbitrage.contracts import (
+    EvaluationArtifactType,
+    ProfitabilityToolResult,
+    SourcingTextReport,
+)
 from arbitrage.evaluation_capture import EvaluationCaptureHooks
 from arbitrage.persistence import CandidateRepository
 from tests import test_candidate_persistence as persistence_fixtures
@@ -42,29 +46,32 @@ class EvaluationCaptureHookTests(unittest.TestCase):
         )
 
     def test_sourcing_and_resale_results_are_captured_without_mutation(self):
-        sourcing = self.helpers.sourcing_result().model_dump_json()
+        sourcing = "Sourcing report with evidence and https://example.com/item"
         resale = self.helpers.resale_result().model_dump_json()
         self.capture("consult_sourcing_agent", sourcing)
         self.capture("consult_resale_agent", resale)
         artifacts = self.repository.list_evaluation_artifacts(self.started.evaluation_id)
         self.assertEqual(
             [item.artifact_type for item in artifacts],
-            [EvaluationArtifactType.SOURCING, EvaluationArtifactType.RESALE],
+            [EvaluationArtifactType.SOURCING_REPORT, EvaluationArtifactType.RESALE],
         )
-        self.assertEqual(artifacts[0].payload_json, sourcing)
+        self.assertEqual(
+            SourcingTextReport.model_validate_json(artifacts[0].payload_json).report_text,
+            sourcing,
+        )
         self.assertEqual(artifacts[1].payload_json, resale)
         self.assertEqual(json.loads(artifacts[0].context_json)["tool_call_id"], "call-1")
 
     def test_repeated_calls_are_preserved_in_order_and_latest_fields_advance(self):
-        first = self.helpers.sourcing_result()
-        second = first.model_copy(update={"item_price": 49.0})
+        first = "First natural-language sourcing report"
+        second = "Second natural-language sourcing report"
         profit = ProfitabilityToolResult(
             success=True,
             result=self.helpers.profitability_result(),
             error=None,
         )
-        self.capture("consult_sourcing_agent", first.model_dump_json())
-        self.capture("consult_sourcing_agent", second.model_dump_json())
+        self.capture("consult_sourcing_agent", first)
+        self.capture("consult_sourcing_agent", second)
         self.capture("calculate_profitability", profit)
         self.capture("calculate_profitability", profit.model_dump_json())
         artifacts = self.repository.list_evaluation_artifacts(self.started.evaluation_id)
@@ -72,14 +79,14 @@ class EvaluationCaptureHookTests(unittest.TestCase):
         self.assertEqual(
             [item.artifact_type for item in artifacts],
             [
-                EvaluationArtifactType.SOURCING,
-                EvaluationArtifactType.SOURCING,
+                EvaluationArtifactType.SOURCING_REPORT,
+                EvaluationArtifactType.SOURCING_REPORT,
                 EvaluationArtifactType.PROFITABILITY,
                 EvaluationArtifactType.PROFITABILITY,
             ],
         )
         evaluation = self.repository.get_evaluation(self.started.evaluation_id)
-        self.assertEqual(evaluation.sourcing_result.item_price, 49.0)
+        self.assertIsNone(evaluation.sourcing_result)
         self.assertEqual(evaluation.profitability_result, profit.result)
 
 

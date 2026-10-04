@@ -5,8 +5,6 @@ from arbitrage.contracts import (
     ManagerEvaluationJudgment,
     ResaleRequest,
     ResaleResult,
-    SourcingRequest,
-    SourcingResult,
 )
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
@@ -31,10 +29,20 @@ async def budget_tool_output(result):
     return result.final_output
 
 
+def sourcing_tool_input(options):
+    print("[debug] Sourcing Agent tool entered")
+    params = options.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("input"), str):
+        raise TypeError("Sourcing Agent tool requires one text input")
+    return params["input"]
+
+
 async def sourcing_tool_output(result):
+    output = result.final_output
+    if not isinstance(output, str):
+        raise TypeError("Sourcing Agent did not return plain text")
     print("[debug] Sourcing Agent called as tool")
-    sourcing_result = result.final_output_as(SourcingResult, raise_if_incorrect_type=True)
-    return sourcing_result.model_dump_json()
+    return output
 
 
 async def resale_tool_output(result):
@@ -64,11 +72,12 @@ budget_agent_tool = budget_agent.as_tool(
 sourcing_agent_tool = sourcing_agent.as_tool(
     tool_name="consult_sourcing_agent",
     tool_description=(
-        "Research current public-web product listings, retailer prices, seller information, "
-        "and sourcing options."
+        "Research current public-web product identity, listings, retailer prices, seller "
+        "information, and sourcing options from one natural-language delegation; returns a "
+        "natural-language evidence report."
     ),
+    input_builder=sourcing_tool_input,
     custom_output_extractor=sourcing_tool_output,
-    parameters=SourcingRequest,
 )
 
 resale_agent_tool = resale_agent.as_tool(
@@ -185,7 +194,8 @@ agent = Agent(
         "consult_sourcing_agent when acquisition-side or product-identity research is needed, including "
         "exact product identity, model or MPN, UPC or GTIN when available, variant, condition, quantity "
         "or package configuration, retailer or seller, acquisition price, availability or inventory "
-        "evidence, source URLs, and uncertainty. Sourcing returns structured evidence, not merely prose. "
+        "evidence, source URLs, and uncertainty. Sourcing returns a natural-language evidence report; "
+        "treat it as specialist research rather than an independently verified typed record. "
         "Do not treat inferred identity as verified. Distinguish "
         "strong identity evidence from probable or ambiguous identity. Before relying on resale evidence, "
         "evaluate identity confidence and decide whether identity is sufficiently established. VERIFIED or "
@@ -281,7 +291,7 @@ agent = Agent(
         "recommend continuing evaluation, gathering more information, human review, or not pursuing further, "
         "but final purchase authority remains with the human. "
         "Construct ResaleRequest only after reviewing the identity and acquisition evidence available to "
-        "you; do not mechanically forward SourcingResult. You may combine legitimate specialist findings, "
+        "you; do not mechanically forward the Sourcing report. You may combine legitimate specialist findings, "
         "explicit human-provided facts, relevant session context actually available to you, and clearly "
         "identified inference, but never represent your inference as a Sourcing fact. Do not automatically "
         "expose acquisition price to Resale; include it only for a specific research reason. Conclude with a "

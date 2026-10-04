@@ -26,6 +26,7 @@ from arbitrage.contracts import (
     ProfitabilityToolResult,
     ResaleResult,
     SourcingResult,
+    SourcingTextReport,
 )
 
 
@@ -612,6 +613,8 @@ class CandidateRepository:
             SourcingResult.model_validate_json(payload_json)
             latest_column = "sourcing_result_json"
             latest_value = payload_json
+        elif artifact_type == EvaluationArtifactType.SOURCING_REPORT:
+            SourcingTextReport.model_validate_json(payload_json)
         elif artifact_type == EvaluationArtifactType.RESALE:
             ResaleResult.model_validate_json(payload_json)
             latest_column = "resale_result_json"

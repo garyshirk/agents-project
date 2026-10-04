@@ -8,7 +8,7 @@ from arbitrage.contracts import (
     EvaluationArtifactType,
     ProfitabilityToolResult,
     ResaleResult,
-    SourcingResult,
+    SourcingTextReport,
 )
 
 
@@ -16,10 +16,6 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
     """Persist actual specialist/tool results without changing what the Manager sees."""
 
     _captured_tools = {
-        "consult_sourcing_agent": (
-            EvaluationArtifactType.SOURCING,
-            SourcingResult,
-        ),
         "consult_resale_agent": (
             EvaluationArtifactType.RESALE,
             ResaleResult,
@@ -37,18 +33,24 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
         tool,
         result: object,
     ) -> None:
-        capture = self._captured_tools.get(tool.name)
-        if capture is None:
-            return
-        artifact_type, result_type = capture
-        if isinstance(result, result_type):
-            validated = result
-        elif isinstance(result, BaseModel):
-            validated = result_type.model_validate(result.model_dump())
-        elif isinstance(result, str):
-            validated = result_type.model_validate_json(result)
+        if tool.name == "consult_sourcing_agent":
+            if not isinstance(result, str):
+                raise TypeError("Sourcing Agent result must be plain text")
+            validated = SourcingTextReport(report_text=result)
+            artifact_type = EvaluationArtifactType.SOURCING_REPORT
         else:
-            validated = result_type.model_validate(result)
+            capture = self._captured_tools.get(tool.name)
+            if capture is None:
+                return
+            artifact_type, result_type = capture
+            if isinstance(result, result_type):
+                validated = result
+            elif isinstance(result, BaseModel):
+                validated = result_type.model_validate(result.model_dump())
+            elif isinstance(result, str):
+                validated = result_type.model_validate_json(result)
+            else:
+                validated = result_type.model_validate(result)
 
         tool_arguments = getattr(context, "tool_arguments", None)
         try:

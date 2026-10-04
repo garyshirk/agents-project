@@ -203,6 +203,17 @@ class SourcingResult(BaseModel):
     notes: str | None
 
 
+class SourcingTextReport(BaseModel):
+    report_text: str
+
+    @field_validator("report_text")
+    @classmethod
+    def validate_report_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("report_text must not be blank")
+        return value
+
+
 class ResaleRequest(BaseModel):
     product_identity: ProductIdentity
     identity_confidence: IdentityConfidence
@@ -784,6 +795,7 @@ class WorkflowEvaluationAction(str, Enum):
 class EvaluationArtifactType(str, Enum):
     HUMAN_INPUT = "HUMAN_INPUT"
     SOURCING = "SOURCING"
+    SOURCING_REPORT = "SOURCING_REPORT"
     RESALE = "RESALE"
     PROFITABILITY = "PROFITABILITY"
 

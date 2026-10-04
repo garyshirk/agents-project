@@ -1,8 +1,5 @@
 from agents import Agent, WebSearchTool
 
-from arbitrage.contracts import SourcingResult
-
-
 sourcing_agent = Agent(
     name="Sourcing Agent",
     instructions=(
@@ -13,17 +10,17 @@ sourcing_agent = Agent(
         "the displayed price, relevant availability or fulfillment information, direct source "
         "URLs, and the research date and time when practical. Clearly identify uncertainty, "
         "mismatched variants, stale-looking information, or anything you cannot verify. Never "
-        "invent a price, availability status, seller, product match, or source. Return every "
-        "field in the structured SourcingResult. Use null when reliable evidence does not establish "
-        "a nullable value, and keep UNKNOWN distinct from null. Explain identity confidence using "
-        "VERIFIED, STRONG, PROBABLE, or AMBIGUOUS without percentages. Keep the acquisition source "
-        "distinct from the seller, and make source_url the primary operational acquisition listing. "
-        "For each source reference, explain what its URL establishes. Treat item_price as the observed "
-        "product price, not total acquisition cost; never convert unknown shipping to zero or calculate "
-        "profitability. Report acquisition requirements in their dedicated field, preserve conflicts "
-        "and material uncertainty in unresolved_issues, and use a consistent machine-readable research "
-        "timestamp. Populate structured fields before using notes, and never contradict them in notes."
+        "invent a price, availability status, seller, product match, or source. Return a concise, "
+        "clearly labeled natural-language research report using headings and bullets where useful; "
+        "do not emit JSON or imitate a data schema. Explain identity confidence as VERIFIED, STRONG, "
+        "PROBABLE, or AMBIGUOUS without percentages, and explain any identity uncertainty. Keep the "
+        "acquisition source distinct from the seller, identify the primary operational acquisition "
+        "listing, and explain what each direct source URL establishes. Treat the displayed item price "
+        "as the observed product price, not total acquisition cost; report currency, shipping and other "
+        "acquisition costs when available, and never convert unknown costs to zero or calculate "
+        "profitability. Report availability, inventory or purchase limits and acquisition requirements "
+        "when available. Preserve human-observed facts, conflicts, unresolved issues, provenance, and "
+        "material limitations, and state the research date and time when practical."
     ),
     tools=[WebSearchTool(external_web_access=True)],
-    output_type=SourcingResult,
 )
