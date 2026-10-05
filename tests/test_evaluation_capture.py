@@ -2,6 +2,8 @@ import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +46,17 @@ class EvaluationCaptureHookTests(unittest.TestCase):
                 result,
             )
         )
+
+    def test_resale_start_marker_distinguishes_nested_failure(self):
+        with redirect_stdout(StringIO()) as output:
+            asyncio.run(
+                self.hooks.on_tool_start(
+                    self.context,
+                    SimpleNamespace(name="Arbitrage Manager"),
+                    SimpleNamespace(name="consult_resale_agent"),
+                )
+            )
+        self.assertIn("Resale Agent tool entered", output.getvalue())
 
     def test_sourcing_and_resale_results_are_captured_without_mutation(self):
         sourcing = "Sourcing report with evidence and https://example.com/item"

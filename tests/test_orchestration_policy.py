@@ -33,7 +33,14 @@ class OrchestrationPolicyTests(unittest.TestCase):
     def test_lead_qualifier_has_only_limited_sourcing(self):
         self.assertEqual(
             [tool.name for tool in lead_qualifier.tools],
-            ["consult_sourcing_agent"],
+            [
+                "consult_sourcing_agent",
+                "route_candidate_ready",
+                "route_existing_candidate",
+                "route_needs_more_info",
+                "route_ambiguous_boundary",
+                "route_stop",
+            ],
         )
 
     def test_profitability_request_construction_semantics(self):

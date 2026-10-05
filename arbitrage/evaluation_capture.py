@@ -26,6 +26,15 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
         ),
     }
 
+    async def on_tool_start(
+        self,
+        context: RunContextWrapper[ApplicationContext],
+        agent: Agent[ApplicationContext],
+        tool,
+    ) -> None:
+        if tool.name == "consult_resale_agent":
+            print("[debug] Resale Agent tool entered")
+
     async def on_tool_end(
         self,
         context: RunContextWrapper[ApplicationContext],

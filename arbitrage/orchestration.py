@@ -1,11 +1,11 @@
 from agents import Agent, handoff
 
 from arbitrage.contracts import (
-    LeadDecision,
     ManagerEvaluationJudgment,
     ResaleRequest,
     ResaleResult,
 )
+from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -94,7 +94,7 @@ lead_qualifier = Agent(
     name="Lead Qualifier",
     instructions=(
         "Determine whether the current Lead has crossed the semantic threshold for durable "
-        "Candidate creation. Always return a LeadDecision. Use judgment rather than simplistic "
+        "Candidate creation. Use judgment rather than simplistic "
         "field-presence checks: an economically meaningful product and variant, acquisition "
         "source, and intended resale destination must be sufficiently specific, and substantive "
         "evaluation must be warranted. Preserve human-observed provenance, conflicts, and material "
@@ -103,16 +103,18 @@ lead_qualifier = Agent(
         "perform resale research, Profitability, or a terminal arbitrage judgment. CANDIDATE_READY "
         "requires a complete StartCandidateEvaluationRequest but no IDs or timestamps. A physical "
         "store location must be truthful and nonblank; if its exact address is unavailable, describe "
-        "it as the human's current named store with exact location not provided. Return "
-        "EXISTING_CANDIDATE with SAME_AS_ACTIVE for clear follow-up to the active Candidate. Return "
-        "CANDIDATE_READY with CLEARLY_NEW for a sufficiently identified different Lead, even though "
-        "the application may block it while another Candidate is active. Return AMBIGUOUS_BOUNDARY "
-        "and one targeted clarification when the relationship is unclear. Return NEEDS_MORE_INFO "
-        "and one targeted question when identity is not yet sufficient but useful human information "
-        "could resolve it. Return STOP with a concise user_message when no defensible path remains."
+        "it as the human's current named store with exact location not provided. Select exactly one "
+        "terminal routing action tool on every run, then stop; never select multiple routing actions. "
+        "Use route_existing_candidate for clear follow-up to the active Candidate. Use "
+        "route_candidate_ready for a sufficiently identified new Lead, even though the application "
+        "may block it while another Candidate is active. Use route_ambiguous_boundary with one "
+        "targeted clarification when the relationship is unclear. Use route_needs_more_info with one "
+        "targeted question when identity is not yet sufficient but useful human information could "
+        "resolve it. Use route_stop with a concise user message when no defensible path remains. Your "
+        "final prose is not authoritative for routing and must not contain JSON or imitate LeadDecision; "
+        "Python constructs the internal LeadDecision from the selected tool."
     ),
-    tools=[sourcing_agent_tool],
-    output_type=LeadDecision,
+    tools=[sourcing_agent_tool, *LEAD_ROUTING_TOOLS],
 )
 
 

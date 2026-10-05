@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
 from arbitrage.contracts import (
     CandidateWorkflowResult,
-    LeadDecision,
     ManagerEvaluationJudgment,
 )
 from arbitrage.coordinator import ArbitrageCoordinator
@@ -76,7 +75,8 @@ def main() -> None:
                 break
 
             print("[debug] Lead Qualifier called")
-            qualification = Runner.run_sync(
+            context.lead_routing.begin()
+            _qualification = Runner.run_sync(
                 lead_qualifier,
                 qualification_input(
                     session,
@@ -86,10 +86,9 @@ def main() -> None:
                 context=context,
                 run_config=run_config,
             )
-            decision = qualification.final_output_as(
-                LeadDecision, raise_if_incorrect_type=True
-            )
-            print(f"[debug] Lead decision: {decision.disposition.value}")
+            decision = context.lead_routing.complete()
+            print(f"[debug] Lead decision constructed: {decision.disposition.value}")
+            print("[debug] Lead qualification completed")
 
             def evaluate(
                 _workflow_result: CandidateWorkflowResult,

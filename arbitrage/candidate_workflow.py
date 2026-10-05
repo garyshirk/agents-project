@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agents import RunContextWrapper, function_tool
 
@@ -22,6 +22,7 @@ from arbitrage.persistence import (
     CandidateRepository,
     RecordNotFoundError,
 )
+from arbitrage.lead_routing_state import LeadRoutingState
 
 
 class CandidateWorkflowError(RuntimeError):
@@ -311,6 +312,7 @@ class CandidateWorkflow:
 @dataclass
 class ApplicationContext:
     candidate_workflow: CandidateWorkflow
+    lead_routing: LeadRoutingState = field(default_factory=LeadRoutingState)
 
 
 def workflow_tool_error(

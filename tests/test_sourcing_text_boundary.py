@@ -6,7 +6,6 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 
 from arbitrage.contracts import (
-    LeadDecision,
     ManagerEvaluationJudgment,
     ResaleRequest,
     ResaleResult,
@@ -83,7 +82,7 @@ class SourcingTextBoundaryTests(unittest.TestCase):
             set(resale_agent_tool.params_json_schema["properties"]),
             set(ResaleRequest.model_fields),
         )
-        self.assertIs(lead_qualifier.output_type, LeadDecision)
+        self.assertIsNone(lead_qualifier.output_type)
         self.assertIs(agent.output_type, ManagerEvaluationJudgment)
         self.assertEqual(
             [tool.name for tool in agent.tools],
