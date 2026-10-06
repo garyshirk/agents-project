@@ -343,6 +343,87 @@ class UnknownMateriality(str, Enum):
     MATERIAL = "MATERIAL"
 
 
+class EconomicCostFinding(BaseModel):
+    cost_id: str
+    name: str
+    cost_type: CostType
+    value: NonNegativeDecimalString | None
+    estimated_low: NonNegativeDecimalString | None
+    estimated_high: NonNegativeDecimalString | None
+    currency: str | None
+    basis: InputBasis | None
+    modeled_value: NonNegativeDecimalString | None
+    modeled_value_basis: InputBasis | None
+    modeled_value_is_conservative: bool
+    unresolved_materiality: UnknownMateriality | None
+    source_references: list[SourceReference]
+    limitations: list[str]
+    notes: str | None
+
+    @field_validator("cost_id", "name")
+    @classmethod
+    def validate_nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def validate_finding(self) -> "EconomicCostFinding":
+        has_range = self.estimated_low is not None or self.estimated_high is not None
+        if has_range and (
+            self.estimated_low is None or self.estimated_high is None
+        ):
+            raise ValueError("estimated_low and estimated_high must be supplied together")
+        if (
+            self.estimated_low is not None
+            and self.estimated_high is not None
+            and self.estimated_low > self.estimated_high
+        ):
+            raise ValueError("estimated_low must not exceed estimated_high")
+        if self.value is not None and has_range:
+            raise ValueError("value and an estimated range are mutually exclusive")
+
+        has_evidence_value = self.value is not None or has_range
+        if has_evidence_value and self.basis is None:
+            raise ValueError("basis is required for a value or estimated range")
+        if not has_evidence_value and self.basis is not None:
+            raise ValueError("basis must be None without a value or estimated range")
+        if has_range and self.basis != InputBasis.ESTIMATED:
+            raise ValueError("an estimated range requires ESTIMATED basis")
+        if (
+            self.value is not None
+            and self.basis != InputBasis.ESTIMATED
+            and self.unresolved_materiality is not None
+        ):
+            raise ValueError(
+                "a known value cannot also have unresolved materiality"
+            )
+
+        if self.modeled_value is None:
+            if self.modeled_value_basis is not None:
+                raise ValueError(
+                    "modeled_value_basis must be None without modeled_value"
+                )
+            if self.modeled_value_is_conservative:
+                raise ValueError(
+                    "modeled_value_is_conservative requires modeled_value"
+                )
+        elif self.modeled_value_basis != InputBasis.ASSUMED:
+            raise ValueError("modeled_value requires ASSUMED modeled_value_basis")
+
+        if not any(
+            (
+                has_evidence_value,
+                self.modeled_value is not None,
+                self.unresolved_materiality is not None,
+            )
+        ):
+            raise ValueError(
+                "a cost finding requires evidence, a modeled value, or unresolved materiality"
+            )
+        return self
+
+
 class CostComponent(BaseModel):
     cost_id: str
     name: str
