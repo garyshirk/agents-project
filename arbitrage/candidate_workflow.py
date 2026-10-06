@@ -7,6 +7,7 @@ from arbitrage.contracts import (
     CandidateLifecycleStatus,
     CandidateConclusion,
     CandidateWorkflowResult,
+    EconomicCostFindingsResult,
     EvaluationArtifact,
     EvaluationArtifactType,
     EvaluationStatus,
@@ -205,6 +206,26 @@ class CandidateWorkflow:
             f"call {call_number}"
         )
         return artifact
+
+    def record_economic_cost_findings(
+        self,
+        artifact_type: EvaluationArtifactType,
+        result: EconomicCostFindingsResult,
+        *,
+        context_json: str | None = None,
+    ) -> EvaluationArtifact:
+        if artifact_type not in {
+            EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
+            EvaluationArtifactType.SELLING_COST_FINDINGS,
+        }:
+            raise ValueError("economic findings require an economic-finding artifact type")
+        _, evaluation = self._active_records()
+        return self.repository.append_evaluation_artifact(
+            evaluation.evaluation_id,
+            artifact_type=artifact_type,
+            payload_json=result.model_dump_json(),
+            context_json=context_json,
+        )
 
     def apply_manager_judgment(
         self, judgment: ManagerEvaluationJudgment

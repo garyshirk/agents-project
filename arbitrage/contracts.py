@@ -424,6 +424,19 @@ class EconomicCostFinding(BaseModel):
         return self
 
 
+class EconomicCostFindingsResult(BaseModel):
+    findings: list[EconomicCostFinding]
+
+    @field_validator("findings")
+    @classmethod
+    def validate_findings(
+        cls, findings: list[EconomicCostFinding]
+    ) -> list[EconomicCostFinding]:
+        if not findings:
+            raise ValueError("findings must not be empty")
+        return findings
+
+
 class CostComponent(BaseModel):
     cost_id: str
     name: str
@@ -879,6 +892,8 @@ class EvaluationArtifactType(str, Enum):
     SOURCING_REPORT = "SOURCING_REPORT"
     RESALE = "RESALE"
     PROFITABILITY = "PROFITABILITY"
+    ACQUISITION_COST_FINDINGS = "ACQUISITION_COST_FINDINGS"
+    SELLING_COST_FINDINGS = "SELLING_COST_FINDINGS"
 
 
 class EvaluationArtifact(BaseModel):

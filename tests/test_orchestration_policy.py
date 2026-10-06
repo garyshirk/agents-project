@@ -19,13 +19,15 @@ class OrchestrationPolicyTests(unittest.TestCase):
             instructions,
         )
 
-    def test_manager_tool_list_remains_v1b_scope(self):
+    def test_manager_tool_list_includes_v1c_economic_capture(self):
         self.assertEqual(
             [tool.name for tool in agent.tools],
             [
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
+                "record_acquisition_cost_findings",
+                "record_selling_cost_findings",
             ],
         )
         self.assertIs(agent.output_type, ManagerEvaluationJudgment)

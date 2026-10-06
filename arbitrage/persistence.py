@@ -17,6 +17,7 @@ from arbitrage.contracts import (
     CandidateLifecycleStatus,
     CandidateRecord,
     CandidateSource,
+    EconomicCostFindingsResult,
     EvaluationArtifact,
     EvaluationArtifactType,
     EvaluationStatus,
@@ -624,6 +625,11 @@ class CandidateRepository:
             if envelope.success and envelope.result is not None:
                 latest_column = "profitability_result_json"
                 latest_value = envelope.result.model_dump_json()
+        elif artifact_type in {
+            EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
+            EvaluationArtifactType.SELLING_COST_FINDINGS,
+        }:
+            EconomicCostFindingsResult.model_validate_json(payload_json)
 
         now = _utc_now()
         with _connection(self.database_path) as connection:

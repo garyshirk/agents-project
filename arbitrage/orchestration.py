@@ -6,6 +6,10 @@ from arbitrage.contracts import (
     ResaleResult,
 )
 from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
+from arbitrage.economic_findings import (
+    record_acquisition_cost_findings,
+    record_selling_cost_findings,
+)
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -312,6 +316,8 @@ agent = Agent(
         sourcing_agent_tool,
         resale_agent_tool,
         calculate_profitability,
+        record_acquisition_cost_findings,
+        record_selling_cost_findings,
     ],
     output_type=ManagerEvaluationJudgment,
 )
