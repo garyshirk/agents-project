@@ -6,10 +6,7 @@ from arbitrage.contracts import (
     ResaleResult,
 )
 from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
-from arbitrage.economic_findings import (
-    record_acquisition_cost_findings,
-    record_selling_cost_findings,
-)
+from arbitrage.economic_findings import record_selling_cost_findings
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -202,6 +199,9 @@ agent = Agent(
         "or package configuration, retailer or seller, acquisition price, availability or inventory "
         "evidence, source URLs, and uncertainty. Sourcing returns a natural-language evidence report; "
         "treat it as specialist research rather than an independently verified typed record. "
+        "After substantive Sourcing, a required application-owned stage captures acquisition economic "
+        "evidence for the active Evaluation before control returns to you. Use that evidence conceptually "
+        "in later evaluation; you are not responsible for manually recording normal acquisition findings. "
         "Do not treat inferred identity as verified. Distinguish "
         "strong identity evidence from probable or ambiguous identity. Before relying on resale evidence, "
         "evaluate identity confidence and decide whether identity is sufficiently established. VERIFIED or "
@@ -316,7 +316,6 @@ agent = Agent(
         sourcing_agent_tool,
         resale_agent_tool,
         calculate_profitability,
-        record_acquisition_cost_findings,
         record_selling_cost_findings,
     ],
     output_type=ManagerEvaluationJudgment,

@@ -101,7 +101,7 @@ def main() -> None:
                     context=context,
                     session=session,
                     run_config=run_config,
-                    hooks=EvaluationCaptureHooks(),
+                    hooks=EvaluationCaptureHooks(run_config=run_config),
                 )
                 return result.final_output_as(
                     ManagerEvaluationJudgment, raise_if_incorrect_type=True

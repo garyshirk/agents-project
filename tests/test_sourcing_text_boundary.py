@@ -10,6 +10,7 @@ from arbitrage.contracts import (
     ResaleRequest,
     ResaleResult,
     SourcingRequest,
+    SourcingResult,
 )
 from arbitrage.orchestration import (
     agent,
@@ -75,7 +76,41 @@ class SourcingTextBoundaryTests(unittest.TestCase):
         self.assertEqual(result, "Evidence report")
         self.assertIn("Sourcing Agent called as tool", output.getvalue())
 
+    def test_sourcing_instructions_cover_acquisition_cost_discovery(self):
+        instructions = sourcing_agent.instructions
+
+        for requirement in (
+            "Acquisition costs section",
+            "purchase price",
+            "acquisition shipping",
+            "purchase or sales tax",
+            "buyer or platform fees",
+            "membership-related acquisition costs",
+            "minimum-order requirements",
+            "other material costs required to obtain the product",
+            "not applicable from one that is unknown",
+        ):
+            self.assertIn(requirement, instructions)
+
+    def test_sourcing_instructions_preserve_evidence_semantics(self):
+        instructions = sourcing_agent.instructions
+
+        for requirement in (
+            "VERIFIED or HUMAN_OBSERVED",
+            "HUMAN_OBSERVED rather than falsely web-verifying it",
+            "researched estimates ESTIMATED",
+            "scenario values ASSUMED",
+            "underlying range remains ESTIMATED",
+            "unresolved or unknown potentially material costs",
+            "never silently turn an unknown cost into zero",
+            "promote ESTIMATED evidence to VERIFIED",
+            "source provenance",
+            "limitations",
+        ):
+            self.assertIn(requirement, instructions)
+
     def test_other_structured_boundaries_remain_unchanged(self):
+        self.assertNotIn("acquisition_cost_findings", SourcingResult.model_fields)
         self.assertIs(resale_agent.output_type, ResaleResult)
         self.assertEqual(resale_agent_tool.params_json_schema["title"], "ResaleRequest")
         self.assertEqual(
@@ -90,7 +125,6 @@ class SourcingTextBoundaryTests(unittest.TestCase):
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
-                "record_acquisition_cost_findings",
                 "record_selling_cost_findings",
             ],
         )

@@ -231,7 +231,7 @@ class EconomicFindingCaptureTests(unittest.TestCase):
             )
         self.assertEqual(self.artifacts(started.evaluation_id), [])
 
-    def test_agent_boundaries_and_instructions_are_unchanged(self):
+    def test_agent_boundaries_and_step3_manager_policy(self):
         self.assertIsNone(lead_qualifier.output_type)
         self.assertIsNone(sourcing_agent.output_type)
         self.assertEqual(sourcing_agent_tool.params_json_schema["title"], "AgentAsToolInput")
@@ -242,7 +242,7 @@ class EconomicFindingCaptureTests(unittest.TestCase):
             "supporting_profitability_reference",
             ManagerEvaluationJudgment.model_fields,
         )
-        self.assertNotIn("record_acquisition_cost_findings", agent.instructions)
+        self.assertIn("required application-owned stage", agent.instructions)
         self.assertNotIn("record_selling_cost_findings", agent.instructions)
         self.assertEqual(
             [tool.name for tool in agent.tools],
@@ -250,7 +250,6 @@ class EconomicFindingCaptureTests(unittest.TestCase):
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
-                "record_acquisition_cost_findings",
                 "record_selling_cost_findings",
             ],
         )

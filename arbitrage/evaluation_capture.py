@@ -1,9 +1,12 @@
 import json
 
-from agents import Agent, RunContextWrapper, RunHooks
+from collections.abc import Awaitable, Callable
+
+from agents import Agent, RunConfig, RunContextWrapper, RunHooks
 from pydantic import BaseModel
 
-from arbitrage.candidate_workflow import ApplicationContext
+from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
+from arbitrage.acquisition_capture import run_required_acquisition_capture
 from arbitrage.contracts import (
     EvaluationArtifactType,
     ProfitabilityToolResult,
@@ -25,6 +28,17 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
             ProfitabilityToolResult,
         ),
     }
+
+    def __init__(
+        self,
+        *,
+        run_config: RunConfig | None = None,
+        acquisition_capture: Callable[
+            [CandidateWorkflow, SourcingTextReport], Awaitable[object]
+        ] | None = None,
+    ) -> None:
+        self.run_config = run_config
+        self.acquisition_capture = acquisition_capture
 
     async def on_tool_start(
         self,
@@ -78,3 +92,15 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
             validated.model_dump_json(),
             context_json=context_json,
         )
+        if tool.name == "consult_sourcing_agent":
+            if self.acquisition_capture is not None:
+                await self.acquisition_capture(
+                    context.context.candidate_workflow,
+                    validated,
+                )
+            else:
+                await run_required_acquisition_capture(
+                    context.context.candidate_workflow,
+                    validated,
+                    run_config=self.run_config,
+                )

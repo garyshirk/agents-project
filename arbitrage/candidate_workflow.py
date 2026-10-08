@@ -15,6 +15,7 @@ from arbitrage.contracts import (
     FinishCandidateEvaluationRequest,
     ManagerEvaluationJudgment,
     ManagerEvaluationOutcome,
+    SourcingTextReport,
     StartCandidateEvaluationRequest,
     UpdateCandidateEvaluationRequest,
     WorkflowEvaluationAction,
@@ -178,6 +179,29 @@ class CandidateWorkflow:
             evaluation.evaluation_id,
             artifact_type=EvaluationArtifactType.HUMAN_INPUT,
             payload_json=json.dumps({"text": text}),
+        )
+
+    def acquisition_capture_evidence(
+        self, sourcing_report: SourcingTextReport
+    ) -> str:
+        candidate, evaluation = self._active_records()
+        human_inputs = [
+            f"{artifact.sequence_number}: {artifact.payload_json}"
+            for artifact in self.repository.list_evaluation_artifacts(
+                evaluation.evaluation_id
+            )
+            if artifact.artifact_type == EvaluationArtifactType.HUMAN_INPUT
+        ]
+        return "\n\n".join(
+            (
+                "[Active Candidate product identity]\n"
+                + candidate.product_identity.model_dump_json(),
+                "[Active Candidate acquisition source]\n"
+                + candidate.acquisition_source.model_dump_json(),
+                "[Raw HUMAN_INPUT artifact payloads in sequence]\n"
+                + "\n".join(human_inputs),
+                "[Exact completed Sourcing report]\n" + sourcing_report.report_text,
+            )
         )
 
     def capture_specialist_result(
