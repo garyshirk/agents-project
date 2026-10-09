@@ -24,6 +24,7 @@ from arbitrage.persistence import (
 )
 from tests import test_candidate_persistence as persistence_fixtures
 from tests.test_lead_decision_contract import candidate_request
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
 
 
 class ProfitabilityFinalizationGuardTests(unittest.TestCase):
@@ -33,6 +34,7 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
         self.repository = CandidateRepository(path)
         self.workflow = CandidateWorkflow(self.repository)
         self.started = self.workflow.start_candidate_evaluation(candidate_request())
+        append_acquisition_readiness(self.repository, self.started.evaluation_id)
         self.profitability = (
             persistence_fixtures.CandidatePersistenceTests().profitability_result()
         )
@@ -98,8 +100,16 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
             self.workflow.apply_manager_judgment(self.judgment())
         self.assert_still_active()
         artifacts = self.repository.list_evaluation_artifacts(self.started.evaluation_id)
-        self.assertEqual(len(artifacts), 1)
-        self.assertFalse(ProfitabilityToolResult.model_validate_json(artifacts[0].payload_json).success)
+        profitability = [
+            item for item in artifacts
+            if item.artifact_type == EvaluationArtifactType.PROFITABILITY
+        ]
+        self.assertEqual(len(profitability), 1)
+        self.assertFalse(
+            ProfitabilityToolResult.model_validate_json(
+                profitability[0].payload_json
+            ).success
+        )
 
     def test_failed_profitability_does_not_support_inconclusive_completion(self):
         self.capture_failed()
@@ -120,7 +130,13 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
             )
         self.assert_still_active()
         self.assertEqual(
-            len(self.repository.list_evaluation_artifacts(self.started.evaluation_id)), 2
+            sum(
+                item.artifact_type == EvaluationArtifactType.PROFITABILITY
+                for item in self.repository.list_evaluation_artifacts(
+                    self.started.evaluation_id
+                )
+            ),
+            2,
         )
 
     def test_successful_profitability_supports_viable(self):
@@ -160,6 +176,7 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
         outcomes = [
             ProfitabilityToolResult.model_validate_json(item.payload_json).success
             for item in artifacts
+            if item.artifact_type == EvaluationArtifactType.PROFITABILITY
         ]
         self.assertEqual(outcomes, [False, True])
 
@@ -175,6 +192,7 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
             [
                 ProfitabilityToolResult.model_validate_json(item.payload_json).success
                 for item in artifacts
+                if item.artifact_type == EvaluationArtifactType.PROFITABILITY
             ],
             [False, True],
         )
@@ -186,7 +204,8 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
         ):
             path = Path(self.temporary_directory.name) / f"{conclusion.value}.db"
             workflow = CandidateWorkflow(CandidateRepository(path))
-            workflow.start_candidate_evaluation(candidate_request())
+            started = workflow.start_candidate_evaluation(candidate_request())
+            append_acquisition_readiness(workflow.repository, started.evaluation_id)
             result = workflow.apply_manager_judgment(self.judgment(conclusion))
             self.assertEqual(result.candidate_lifecycle, expected)
 
@@ -241,6 +260,8 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
         self.assertEqual(
             [item.artifact_type for item in artifacts],
             [
+                EvaluationArtifactType.SOURCING_REPORT,
+                EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
                 EvaluationArtifactType.HUMAN_INPUT,
                 EvaluationArtifactType.PROFITABILITY,
                 EvaluationArtifactType.PROFITABILITY,

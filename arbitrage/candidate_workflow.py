@@ -251,6 +251,10 @@ class CandidateWorkflow:
             context_json=context_json,
         )
 
+    def require_acquisition_capture(self) -> None:
+        _, evaluation = self._active_records()
+        self.repository.require_acquisition_capture(evaluation.evaluation_id)
+
     def apply_manager_judgment(
         self, judgment: ManagerEvaluationJudgment
     ) -> CandidateWorkflowResult:

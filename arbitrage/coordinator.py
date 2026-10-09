@@ -13,6 +13,7 @@ from arbitrage.contracts import (
     WorkflowEvaluationAction,
 )
 from arbitrage.persistence import SubstantiveCompletionPrerequisiteError
+from arbitrage.persistence import AcquisitionCapturePrerequisiteError
 
 
 SubstantiveEvaluation = Callable[
@@ -135,15 +136,25 @@ class ArbitrageCoordinator:
                 print(
                     "[debug] Manager continuation requested after finalization guard"
                 )
-                continuation = (
-                    "Deterministic finalization rejected the prior COMPLETED judgment: "
-                    f"{error}. A failed calculate_profitability invocation is not a "
-                    "substantive result and is not equivalent to a successful result "
-                    "whose status is INSUFFICIENT_INPUTS. "
-                    "Inspect its error, correct and retry the Profitability request when "
-                    "possible, then return a new structured judgment. Do not declare "
-                    "VIABLE based only on gross spread."
-                )
+                if isinstance(error, AcquisitionCapturePrerequisiteError):
+                    continuation = (
+                        "Deterministic finalization rejected the prior COMPLETED judgment: "
+                        f"{error}. Substantive Sourcing must complete and its required "
+                        "application-owned acquisition-cost capture must succeed before "
+                        "Profitability or successful completion. Obtain or refresh Sourcing "
+                        "when appropriate, then return a new structured judgment. Do not "
+                        "invent acquisition findings or missing costs."
+                    )
+                else:
+                    continuation = (
+                        "Deterministic finalization rejected the prior COMPLETED judgment: "
+                        f"{error}. A failed calculate_profitability invocation is not a "
+                        "substantive result and is not equivalent to a successful result "
+                        "whose status is INSUFFICIENT_INPUTS. "
+                        "Inspect its error, correct and retry the Profitability request when "
+                        "possible, then return a new structured judgment. Do not declare "
+                        "VIABLE based only on gross spread."
+                    )
                 judgment = substantive_evaluation(
                     self.candidate_workflow.active_result(), continuation
                 )
@@ -151,12 +162,25 @@ class ArbitrageCoordinator:
                     final_result = self.candidate_workflow.apply_manager_judgment(
                         judgment
                     )
-                except SubstantiveCompletionPrerequisiteError:
+                except SubstantiveCompletionPrerequisiteError as repeated_error:
+                    if isinstance(
+                        repeated_error, AcquisitionCapturePrerequisiteError
+                    ):
+                        response = (
+                            "Substantive completion was blocked because the latest "
+                            "Sourcing report does not have a successful acquisition-cost "
+                            "capture. The Evaluation remains active and all captured "
+                            "evidence was preserved."
+                        )
+                    else:
+                        response = (
+                            "Substantive completion was blocked because Profitability did "
+                            "not execute successfully. The Evaluation remains active and "
+                            "all captured attempts were preserved."
+                        )
                     return CoordinationResult(
                         False,
-                        "Substantive completion was blocked because Profitability did "
-                        "not execute successfully. The Evaluation remains active and all "
-                        "captured attempts were preserved.",
+                        response,
                         self.candidate_workflow.active_result(),
                     )
         except Exception as error:

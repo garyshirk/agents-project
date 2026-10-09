@@ -21,6 +21,7 @@ from arbitrage.persistence import (
 )
 from tests.test_lead_decision_contract import candidate_request
 from tests import test_candidate_persistence as persistence_fixtures
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
 
 
 class V1B2LifecycleTests(unittest.TestCase):
@@ -46,6 +47,7 @@ class V1B2LifecycleTests(unittest.TestCase):
 
     def finish(self, conclusion):
         started = self.workflow.start_candidate_evaluation(candidate_request())
+        append_acquisition_readiness(self.repository, started.evaluation_id)
         if conclusion == CandidateConclusion.VIABLE:
             self.append_successful_profitability(self.workflow, started.evaluation_id)
         result = self.workflow.apply_manager_judgment(
@@ -73,6 +75,9 @@ class V1B2LifecycleTests(unittest.TestCase):
                 path = Path(self.temporary_directory.name) / f"{conclusion.value}.db"
                 workflow = CandidateWorkflow(CandidateRepository(path))
                 started = workflow.start_candidate_evaluation(candidate_request())
+                append_acquisition_readiness(
+                    workflow.repository, started.evaluation_id
+                )
                 if conclusion == CandidateConclusion.VIABLE:
                     self.append_successful_profitability(
                         workflow, started.evaluation_id
@@ -114,6 +119,8 @@ class V1B2LifecycleTests(unittest.TestCase):
             repository = CandidateRepository(path)
             workflow = CandidateWorkflow(repository)
             started = workflow.start_candidate_evaluation(candidate_request())
+            if terminal == EvaluationStatus.COMPLETED:
+                append_acquisition_readiness(repository, started.evaluation_id)
             if terminal == EvaluationStatus.CANCELLED:
                 repository.update_evaluation_status(
                     started.evaluation_id, EvaluationStatus.WAITING_FOR_INPUT
@@ -142,6 +149,7 @@ class V1B2LifecycleTests(unittest.TestCase):
 
     def test_finalization_transaction_rolls_back(self):
         started = self.workflow.start_candidate_evaluation(candidate_request())
+        append_acquisition_readiness(self.repository, started.evaluation_id)
         self.append_successful_profitability(self.workflow, started.evaluation_id)
         with sqlite3.connect(self.database_path) as connection:
             connection.execute(

@@ -44,6 +44,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.persistence import CandidateRepository, InvalidStateTransitionError
 from arbitrage.tools.profitability import _calculate_profitability
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
 
 
 class CandidateWorkflowTests(unittest.TestCase):
@@ -55,6 +56,12 @@ class CandidateWorkflowTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def make_active_acquisition_ready(self) -> None:
+        assert self.workflow.active.evaluation_id is not None
+        append_acquisition_readiness(
+            self.repository, self.workflow.active.evaluation_id
+        )
 
     @staticmethod
     def identity(variant: str = "Men's size 10") -> ProductIdentity:
@@ -282,6 +289,7 @@ class CandidateWorkflowTests(unittest.TestCase):
 
     def test_finish_completed_persists_outputs_and_clears_active_state(self):
         started = self.workflow.start_candidate_evaluation(self.start_request())
+        self.make_active_acquisition_ready()
         request = self.finish_request()
         result = self.workflow.finish_candidate_evaluation(request)
         candidate = self.repository.get_candidate(started.candidate_id)
@@ -298,6 +306,7 @@ class CandidateWorkflowTests(unittest.TestCase):
 
     def test_inconclusive_completion_does_not_require_profitability(self):
         started = self.workflow.start_candidate_evaluation(self.start_request())
+        self.make_active_acquisition_ready()
         request = self.finish_request(EvaluationStatus.COMPLETED)
         request.profitability_result = None
         result = self.workflow.finish_candidate_evaluation(request)
@@ -324,6 +333,7 @@ class CandidateWorkflowTests(unittest.TestCase):
 
     def test_terminal_evaluation_cannot_be_modified_through_workflow(self):
         started = self.workflow.start_candidate_evaluation(self.start_request())
+        self.make_active_acquisition_ready()
         self.workflow.finish_candidate_evaluation(self.finish_request())
         with self.assertRaises(CandidateWorkflowError):
             self.workflow.update_candidate_evaluation(
@@ -362,6 +372,7 @@ class CandidateWorkflowTests(unittest.TestCase):
 
     def test_separate_candidates_after_completion_preserve_first_history(self):
         first = self.workflow.start_candidate_evaluation(self.start_request())
+        self.make_active_acquisition_ready()
         self.workflow.finish_candidate_evaluation(self.finish_request())
         first_record = self.repository.get_candidate(first.candidate_id)
         first_evaluation = self.repository.get_evaluation(first.evaluation_id)
@@ -369,6 +380,7 @@ class CandidateWorkflowTests(unittest.TestCase):
         second = self.workflow.start_candidate_evaluation(
             self.start_request(source=self.source("Elgin, IL"))
         )
+        self.make_active_acquisition_ready()
         self.workflow.finish_candidate_evaluation(self.finish_request())
         third = self.workflow.start_candidate_evaluation(
             self.start_request(destination=self.destination("Facebook Marketplace"))

@@ -60,6 +60,10 @@ class SubstantiveCompletionPrerequisiteError(InvalidStateTransitionError):
     pass
 
 
+class AcquisitionCapturePrerequisiteError(SubstantiveCompletionPrerequisiteError):
+    pass
+
+
 class ViableFinalizationPrerequisiteError(SubstantiveCompletionPrerequisiteError):
     pass
 
@@ -708,6 +712,48 @@ class CandidateRepository:
                 connection, evaluation_id
             )
 
+    def require_acquisition_capture(self, evaluation_id: str) -> None:
+        with _connection(self.database_path) as connection:
+            if connection.execute(
+                "SELECT 1 FROM candidate_evaluations WHERE evaluation_id = ?",
+                (evaluation_id,),
+            ).fetchone() is None:
+                raise RecordNotFoundError(f"Evaluation not found: {evaluation_id}")
+            self._require_acquisition_capture(connection, evaluation_id)
+
+    @staticmethod
+    def _require_acquisition_capture(
+        connection: sqlite3.Connection, evaluation_id: str
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT artifact_type, MAX(sequence_number) AS latest_sequence
+            FROM evaluation_artifacts
+            WHERE evaluation_id = ? AND artifact_type IN (?, ?)
+            GROUP BY artifact_type
+            """,
+            (
+                evaluation_id,
+                EvaluationArtifactType.SOURCING_REPORT.value,
+                EvaluationArtifactType.ACQUISITION_COST_FINDINGS.value,
+            ),
+        ).fetchall()
+        latest = {row["artifact_type"]: row["latest_sequence"] for row in rows}
+        sourcing_sequence = latest.get(EvaluationArtifactType.SOURCING_REPORT.value)
+        capture_sequence = latest.get(
+            EvaluationArtifactType.ACQUISITION_COST_FINDINGS.value
+        )
+        if sourcing_sequence is None:
+            raise AcquisitionCapturePrerequisiteError(
+                "Successful completion and Profitability require a substantive "
+                "Sourcing report and its acquisition-cost capture"
+            )
+        if capture_sequence is None or capture_sequence <= sourcing_sequence:
+            raise AcquisitionCapturePrerequisiteError(
+                "The latest substantive Sourcing report does not have a successful "
+                "acquisition-cost capture"
+            )
+
     @staticmethod
     def _profitability_artifact_state(
         connection: sqlite3.Connection, evaluation_id: str
@@ -832,6 +878,7 @@ class CandidateRepository:
                     f"{status.value} cannot produce Candidate {final_candidate_status.value}"
                 )
             if status == EvaluationStatus.COMPLETED:
+                self._require_acquisition_capture(connection, evaluation_id)
                 profitability_state = self._profitability_artifact_state(
                     connection, evaluation_id
                 )

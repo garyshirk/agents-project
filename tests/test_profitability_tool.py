@@ -2,12 +2,15 @@ import asyncio
 import contextlib
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from agents.items import ItemHelpers
 from agents.tool_context import ToolContext
 from openai.types.responses import ResponseFunctionToolCall
 
+from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
 from arbitrage.contracts import (
     AcquisitionScenario,
     CostComponent,
@@ -24,9 +27,24 @@ from arbitrage.contracts import (
     UnknownMateriality,
 )
 from arbitrage.tools.profitability import calculate_profitability
+from arbitrage.persistence import CandidateRepository
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
+from tests.test_lead_decision_contract import candidate_request
 
 
 class ProfitabilityFunctionToolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        repository = CandidateRepository(
+            Path(self.temporary_directory.name) / "profitability.db"
+        )
+        self.workflow = CandidateWorkflow(repository)
+        started = self.workflow.start_candidate_evaluation(candidate_request())
+        append_acquisition_readiness(repository, started.evaluation_id)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
     @staticmethod
     def request() -> ProfitabilityRequest:
         identity = ProductIdentity(
@@ -76,8 +94,7 @@ class ProfitabilityFunctionToolTests(unittest.TestCase):
             sensitivity_inputs=[],
         )
 
-    @staticmethod
-    def invoke(arguments: str) -> ProfitabilityToolResult:
+    def invoke(self, arguments: str) -> ProfitabilityToolResult:
         tool_call = ResponseFunctionToolCall(
             arguments=arguments,
             call_id="offline-profitability-call",
@@ -85,7 +102,7 @@ class ProfitabilityFunctionToolTests(unittest.TestCase):
             type="function_call",
         )
         context = ToolContext(
-            None,
+            ApplicationContext(candidate_workflow=self.workflow),
             tool_name=calculate_profitability.name,
             tool_call_id=tool_call.call_id,
             tool_arguments=arguments,

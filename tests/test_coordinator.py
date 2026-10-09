@@ -18,6 +18,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.coordinator import ArbitrageCoordinator
 from arbitrage.persistence import CandidateRepository
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
 from tests.test_lead_decision_contract import candidate_request
 
 
@@ -103,6 +104,7 @@ class CoordinatorTests(unittest.TestCase):
             helper = CandidatePersistenceTests()
             from arbitrage.contracts import ProfitabilityToolResult
 
+            append_acquisition_readiness(self.repository, result.evaluation_id)
             self.workflow.capture_specialist_result(
                 EvaluationArtifactType.PROFITABILITY,
                 ProfitabilityToolResult(
@@ -128,9 +130,17 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(second.workflow_result.evaluation_status, EvaluationStatus.COMPLETED)
         self.assertEqual(second.workflow_result.candidate_lifecycle, CandidateLifecycleStatus.VIABLE)
         artifacts = self.repository.list_evaluation_artifacts(ids[1])
-        self.assertEqual(len(artifacts), 3)
+        self.assertEqual(len(artifacts), 5)
         self.assertIn("Initial lead", artifacts[0].payload_json)
         self.assertIn("$49", artifacts[1].payload_json)
+        self.assertEqual(
+            [item.artifact_type for item in artifacts[2:]],
+            [
+                EvaluationArtifactType.SOURCING_REPORT,
+                EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
+                EvaluationArtifactType.PROFITABILITY,
+            ],
+        )
 
     def test_failure_preserves_captured_result_and_marks_failed(self):
         def fail(result, continuation):

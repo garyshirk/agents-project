@@ -42,6 +42,7 @@ from arbitrage.persistence import (
 )
 from arbitrage.tools.profitability import _calculate_profitability
 from arbitrage.contracts import ProfitabilityRequest
+from tests.acquisition_readiness_fixtures import append_acquisition_readiness
 
 
 class CandidatePersistenceTests(unittest.TestCase):
@@ -63,6 +64,9 @@ class CandidatePersistenceTests(unittest.TestCase):
                 error=None,
             ).model_dump_json(),
         )
+
+    def append_acquisition_readiness(self, evaluation_id: str) -> None:
+        append_acquisition_readiness(self.repository, evaluation_id)
 
     @staticmethod
     def identity(model: str = "FD2722-001", variant: str = "Men's size 10") -> ProductIdentity:
@@ -311,6 +315,7 @@ class CandidatePersistenceTests(unittest.TestCase):
         evaluation = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_acquisition_readiness(evaluation.evaluation_id)
         self.append_successful_profitability(evaluation.evaluation_id)
         completed = self.repository.complete_evaluation(
             evaluation.evaluation_id,
@@ -337,6 +342,7 @@ class CandidatePersistenceTests(unittest.TestCase):
         first = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_acquisition_readiness(first.evaluation_id)
         self.append_successful_profitability(first.evaluation_id)
         first = self.repository.complete_evaluation(
             first.evaluation_id,
@@ -346,6 +352,7 @@ class CandidatePersistenceTests(unittest.TestCase):
         second = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.MANUAL_REFRESH
         )
+        self.append_acquisition_readiness(second.evaluation_id)
         self.assertEqual(
             self.repository.get_candidate(candidate.candidate_id).latest_evaluation_id,
             first.evaluation_id,
@@ -381,6 +388,7 @@ class CandidatePersistenceTests(unittest.TestCase):
         success = self.repository.create_evaluation(
             candidate.candidate_id, trigger=EvaluationTrigger.HUMAN_REQUEST
         )
+        self.append_acquisition_readiness(success.evaluation_id)
         self.append_successful_profitability(success.evaluation_id)
         success = self.repository.complete_evaluation(
             success.evaluation_id,
@@ -427,6 +435,7 @@ class CandidatePersistenceTests(unittest.TestCase):
             assumptions=["Authenticity assumed"],
             uncertainties=["Size-specific demand unknown"],
         )
+        self.append_acquisition_readiness(evaluation.evaluation_id)
         completed = self.repository.complete_evaluation(
             evaluation.evaluation_id,
             status=EvaluationStatus.COMPLETED,

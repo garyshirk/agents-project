@@ -2,6 +2,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from agents import RunContextWrapper, function_tool
 
+from arbitrage.candidate_workflow import ApplicationContext
 from arbitrage.contracts import (
     AcquisitionScenario,
     CalculatedCost,
@@ -20,6 +21,7 @@ from arbitrage.contracts import (
     UnknownInput,
     UnknownMateriality,
 )
+from arbitrage.persistence import AcquisitionCapturePrerequisiteError
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -373,17 +375,25 @@ def _calculate_profitability(request: ProfitabilityRequest) -> ProfitabilityResu
 
 
 def profitability_tool_error(
-    _context: RunContextWrapper[None], error: Exception
+    _context: RunContextWrapper[ApplicationContext], error: Exception
 ) -> str:
-    return ProfitabilityToolResult(
-        success=False,
-        result=None,
-        error=(
+    if isinstance(error, AcquisitionCapturePrerequisiteError):
+        message = (
+            f"{error}. Complete or refresh substantive Sourcing so its required "
+            "application-owned acquisition-cost capture succeeds before retrying "
+            "Profitability. Do not synthesize findings or missing costs."
+        )
+    else:
+        message = (
             f"{error}. Correct the Profitability request and retry when appropriate; "
             "do not invent missing economic inputs. If one economic input is both "
             "unresolved and an assumed zero-valued cost, remove the zero placeholder "
             "and preserve the unknown."
-        ),
+        )
+    return ProfitabilityToolResult(
+        success=False,
+        result=None,
+        error=message,
     ).model_dump_json()
 
 
@@ -391,8 +401,12 @@ def profitability_tool_error(
     output_type=ProfitabilityToolResult,
     failure_error_function=profitability_tool_error,
 )
-def calculate_profitability(request: ProfitabilityRequest) -> ProfitabilityToolResult:
+def calculate_profitability(
+    context: RunContextWrapper[ApplicationContext],
+    request: ProfitabilityRequest,
+) -> ProfitabilityToolResult:
     """Calculate deterministic economics for one acquisition and sale scenario pairing."""
+    context.context.candidate_workflow.require_acquisition_capture()
     print("[debug] Profitability Tool called")
     print(f"[debug] Profitability validated request: {request.model_dump_json()}")
     result = _calculate_profitability(request)
