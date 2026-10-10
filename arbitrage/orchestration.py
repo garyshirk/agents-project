@@ -6,7 +6,6 @@ from arbitrage.contracts import (
     ResaleResult,
 )
 from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
-from arbitrage.economic_findings import record_selling_cost_findings
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -214,7 +213,10 @@ agent = Agent(
         "verified, you may proceed when reasonable, but explicitly pass that uncertainty to the Resale "
         "Agent and preserve it in your analysis. If materially different products or variants could match, "
         "request additional research when it could resolve the ambiguity, or report that reliable "
-        "evaluation is not yet possible rather than silently choosing one. Treat the Resale Agent as an "
+        "evaluation is not yet possible rather than silently choosing one. After substantive Resale, a required "
+        "application-owned stage captures selling-cost evidence for the active Evaluation before control "
+        "returns to you. Use that evidence conceptually in later evaluation; you are not responsible for "
+        "manually recording normal selling findings. Treat the Resale Agent as an "
         "independent market-research and appraisal specialist whose purpose is to find credible evidence "
         "of what buyers appear willing to pay, not to make an opportunity appear profitable. Preserve its "
         "distinctions between realized-sale evidence and asking prices, exact and imperfect matches, "
@@ -316,7 +318,6 @@ agent = Agent(
         sourcing_agent_tool,
         resale_agent_tool,
         calculate_profitability,
-        record_selling_cost_findings,
     ],
     output_type=ManagerEvaluationJudgment,
 )

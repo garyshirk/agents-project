@@ -125,7 +125,6 @@ class SourcingTextBoundaryTests(unittest.TestCase):
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
-                "record_selling_cost_findings",
             ],
         )
 

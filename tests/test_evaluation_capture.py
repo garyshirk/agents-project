@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
 from arbitrage.acquisition_capture_state import AcquisitionCaptureError
+from arbitrage.selling_capture_state import SellingCaptureError
 from arbitrage.contracts import (
     CostType,
     EconomicCostFinding,
@@ -37,6 +38,7 @@ class EvaluationCaptureHookTests(unittest.TestCase):
             tool_arguments=json.dumps({"candidate_description": "test"}),
         )
         self.capture_calls = []
+        self.selling_capture_calls = []
 
         async def capture(workflow, report):
             artifacts = workflow.repository.list_evaluation_artifacts(
@@ -72,7 +74,46 @@ class EvaluationCaptureHookTests(unittest.TestCase):
                 ),
             )
 
-        self.hooks = EvaluationCaptureHooks(acquisition_capture=capture)
+        async def capture_selling(workflow, resale):
+            artifacts = workflow.repository.list_evaluation_artifacts(
+                self.started.evaluation_id
+            )
+            self.assertEqual(
+                artifacts[-1].artifact_type,
+                EvaluationArtifactType.RESALE,
+            )
+            self.selling_capture_calls.append(resale)
+            workflow.record_economic_cost_findings(
+                EvaluationArtifactType.SELLING_COST_FINDINGS,
+                EconomicCostFindingsResult(
+                    findings=[
+                        EconomicCostFinding(
+                            cost_id="marketplace_fee",
+                            name="Marketplace fee",
+                            cost_type=CostType.PERCENT_OF_UNIT_PRICE,
+                            value=None,
+                            estimated_low=None,
+                            estimated_high=None,
+                            currency=None,
+                            basis=None,
+                            modeled_value=None,
+                            modeled_value_basis=None,
+                            modeled_value_is_conservative=False,
+                            unresolved_materiality="MATERIAL",
+                            source_references=[],
+                            limitations=["Seller-specific fee is unresolved."],
+                            notes=None,
+                        )
+                    ]
+                ),
+            )
+
+        self.acquisition_capture = capture
+        self.selling_capture = capture_selling
+        self.hooks = EvaluationCaptureHooks(
+            acquisition_capture=capture,
+            selling_capture=capture_selling,
+        )
         self.helpers = persistence_fixtures.CandidatePersistenceTests()
 
     def tearDown(self) -> None:
@@ -111,6 +152,7 @@ class EvaluationCaptureHookTests(unittest.TestCase):
                 EvaluationArtifactType.SOURCING_REPORT,
                 EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
                 EvaluationArtifactType.RESALE,
+                EvaluationArtifactType.SELLING_COST_FINDINGS,
             ],
         )
         self.assertEqual(
@@ -120,6 +162,10 @@ class EvaluationCaptureHookTests(unittest.TestCase):
         self.assertEqual(artifacts[2].payload_json, resale)
         self.assertEqual(json.loads(artifacts[0].context_json)["tool_call_id"], "call-1")
         self.assertEqual(self.capture_calls[0].report_text, sourcing)
+        self.assertEqual(
+            self.selling_capture_calls[0].model_dump_json(),
+            resale,
+        )
 
     def test_repeated_calls_are_preserved_in_order_and_latest_fields_advance(self):
         first = "First natural-language sourcing report"
@@ -173,6 +219,71 @@ class EvaluationCaptureHookTests(unittest.TestCase):
         self.assertEqual(
             [item.artifact_type for item in artifacts],
             [EvaluationArtifactType.SOURCING_REPORT],
+        )
+
+    def test_resale_hook_propagates_capture_failure_after_preserving_resale(self):
+        async def fail_capture(_workflow, _resale):
+            raise SellingCaptureError("required selling capture did not complete")
+
+        hooks = EvaluationCaptureHooks(
+            acquisition_capture=self.acquisition_capture,
+            selling_capture=fail_capture,
+        )
+        resale = self.helpers.resale_result()
+        with self.assertRaisesRegex(
+            SellingCaptureError, "required selling capture did not complete"
+        ):
+            asyncio.run(
+                hooks.on_tool_end(
+                    self.context,
+                    SimpleNamespace(name="Arbitrage Manager"),
+                    SimpleNamespace(name="consult_resale_agent"),
+                    resale,
+                )
+            )
+
+        artifacts = self.repository.list_evaluation_artifacts(
+            self.started.evaluation_id
+        )
+        self.assertEqual(
+            [item.artifact_type for item in artifacts],
+            [EvaluationArtifactType.RESALE],
+        )
+        self.assertEqual(artifacts[0].payload_json, resale.model_dump_json())
+
+    def test_concurrent_sourcing_and_resale_preserve_each_capture_order(self):
+        async def run_concurrently():
+            await asyncio.gather(
+                self.hooks.on_tool_end(
+                    self.context,
+                    SimpleNamespace(name="Arbitrage Manager"),
+                    SimpleNamespace(name="consult_sourcing_agent"),
+                    "Concurrent sourcing evidence",
+                ),
+                self.hooks.on_tool_end(
+                    self.context,
+                    SimpleNamespace(name="Arbitrage Manager"),
+                    SimpleNamespace(name="consult_resale_agent"),
+                    self.helpers.resale_result(),
+                ),
+            )
+
+        asyncio.run(run_concurrently())
+
+        artifacts = self.repository.list_evaluation_artifacts(
+            self.started.evaluation_id
+        )
+        types = [item.artifact_type for item in artifacts]
+        self.assertLess(
+            types.index(EvaluationArtifactType.SOURCING_REPORT),
+            types.index(EvaluationArtifactType.ACQUISITION_COST_FINDINGS),
+        )
+        self.assertLess(
+            types.index(EvaluationArtifactType.RESALE),
+            types.index(EvaluationArtifactType.SELLING_COST_FINDINGS),
+        )
+        self.assertTrue(
+            all(item.evaluation_id == self.started.evaluation_id for item in artifacts)
         )
 
 

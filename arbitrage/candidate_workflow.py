@@ -15,6 +15,7 @@ from arbitrage.contracts import (
     FinishCandidateEvaluationRequest,
     ManagerEvaluationJudgment,
     ManagerEvaluationOutcome,
+    ResaleResult,
     SourcingTextReport,
     StartCandidateEvaluationRequest,
     UpdateCandidateEvaluationRequest,
@@ -201,6 +202,28 @@ class CandidateWorkflow:
                 "[Raw HUMAN_INPUT artifact payloads in sequence]\n"
                 + "\n".join(human_inputs),
                 "[Exact completed Sourcing report]\n" + sourcing_report.report_text,
+            )
+        )
+
+    def selling_capture_evidence(self, resale_result: ResaleResult) -> str:
+        candidate, evaluation = self._active_records()
+        human_inputs = [
+            f"{artifact.sequence_number}: {artifact.payload_json}"
+            for artifact in self.repository.list_evaluation_artifacts(
+                evaluation.evaluation_id
+            )
+            if artifact.artifact_type == EvaluationArtifactType.HUMAN_INPUT
+        ]
+        return "\n\n".join(
+            (
+                "[Active Candidate product identity]\n"
+                + candidate.product_identity.model_dump_json(),
+                "[Active Candidate resale destination]\n"
+                + candidate.resale_destination.model_dump_json(),
+                "[Raw HUMAN_INPUT artifact payloads in sequence]\n"
+                + "\n".join(human_inputs),
+                "[Exact structured Resale result]\n"
+                + resale_result.model_dump_json(),
             )
         )
 

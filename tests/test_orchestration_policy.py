@@ -19,14 +19,13 @@ class OrchestrationPolicyTests(unittest.TestCase):
             instructions,
         )
 
-    def test_manager_tool_list_leaves_acquisition_capture_to_application(self):
+    def test_manager_tool_list_leaves_cost_capture_to_application(self):
         self.assertEqual(
             [tool.name for tool in agent.tools],
             [
                 "consult_sourcing_agent",
                 "consult_resale_agent",
                 "calculate_profitability",
-                "record_selling_cost_findings",
             ],
         )
         self.assertIs(agent.output_type, ManagerEvaluationJudgment)
@@ -43,6 +42,19 @@ class OrchestrationPolicyTests(unittest.TestCase):
         ):
             self.assertIn(requirement, instructions)
         self.assertNotIn("record_acquisition_cost_findings", instructions)
+        self.assertNotIn("record_selling_cost_findings", instructions)
+
+    def test_manager_describes_application_owned_selling_capture(self):
+        instructions = agent.instructions
+
+        for requirement in (
+            "After substantive Resale",
+            "required application-owned stage captures selling-cost evidence",
+            "active Evaluation",
+            "before control returns to you",
+            "not responsible for manually recording normal selling findings",
+        ):
+            self.assertIn(requirement, instructions)
         self.assertNotIn("record_selling_cost_findings", instructions)
 
     def test_lead_qualifier_has_only_limited_sourcing(self):

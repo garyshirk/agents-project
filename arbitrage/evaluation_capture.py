@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from arbitrage.candidate_workflow import ApplicationContext, CandidateWorkflow
 from arbitrage.acquisition_capture import run_required_acquisition_capture
+from arbitrage.selling_capture import run_required_selling_capture
 from arbitrage.contracts import (
     EvaluationArtifactType,
     ProfitabilityToolResult,
@@ -36,9 +37,13 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
         acquisition_capture: Callable[
             [CandidateWorkflow, SourcingTextReport], Awaitable[object]
         ] | None = None,
+        selling_capture: Callable[
+            [CandidateWorkflow, ResaleResult], Awaitable[object]
+        ] | None = None,
     ) -> None:
         self.run_config = run_config
         self.acquisition_capture = acquisition_capture
+        self.selling_capture = selling_capture
 
     async def on_tool_start(
         self,
@@ -100,6 +105,18 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
                 )
             else:
                 await run_required_acquisition_capture(
+                    context.context.candidate_workflow,
+                    validated,
+                    run_config=self.run_config,
+                )
+        elif tool.name == "consult_resale_agent":
+            if self.selling_capture is not None:
+                await self.selling_capture(
+                    context.context.candidate_workflow,
+                    validated,
+                )
+            else:
+                await run_required_selling_capture(
                     context.context.candidate_workflow,
                     validated,
                     run_config=self.run_config,
