@@ -28,7 +28,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.tools.profitability import calculate_profitability
 from arbitrage.persistence import CandidateRepository
-from tests.acquisition_readiness_fixtures import append_acquisition_readiness
+from tests.acquisition_readiness_fixtures import append_economic_readiness
 from tests.test_lead_decision_contract import candidate_request
 
 
@@ -40,7 +40,7 @@ class ProfitabilityFunctionToolTests(unittest.TestCase):
         )
         self.workflow = CandidateWorkflow(repository)
         started = self.workflow.start_candidate_evaluation(candidate_request())
-        append_acquisition_readiness(repository, started.evaluation_id)
+        append_economic_readiness(repository, started.evaluation_id)
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()

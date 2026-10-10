@@ -21,7 +21,10 @@ from arbitrage.contracts import (
     UnknownInput,
     UnknownMateriality,
 )
-from arbitrage.persistence import AcquisitionCapturePrerequisiteError
+from arbitrage.persistence import (
+    AcquisitionCapturePrerequisiteError,
+    SellingCapturePrerequisiteError,
+)
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -383,6 +386,12 @@ def profitability_tool_error(
             "application-owned acquisition-cost capture succeeds before retrying "
             "Profitability. Do not synthesize findings or missing costs."
         )
+    elif isinstance(error, SellingCapturePrerequisiteError):
+        message = (
+            f"{error}. Complete or refresh substantive Resale so its required "
+            "application-owned selling-cost capture succeeds before retrying "
+            "Profitability. Do not synthesize findings or missing costs."
+        )
     else:
         message = (
             f"{error}. Correct the Profitability request and retry when appropriate; "
@@ -406,7 +415,7 @@ def calculate_profitability(
     request: ProfitabilityRequest,
 ) -> ProfitabilityToolResult:
     """Calculate deterministic economics for one acquisition and sale scenario pairing."""
-    context.context.candidate_workflow.require_acquisition_capture()
+    context.context.candidate_workflow.require_economic_readiness()
     print("[debug] Profitability Tool called")
     print(f"[debug] Profitability validated request: {request.model_dump_json()}")
     result = _calculate_profitability(request)

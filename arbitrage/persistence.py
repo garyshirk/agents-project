@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -64,6 +65,10 @@ class AcquisitionCapturePrerequisiteError(SubstantiveCompletionPrerequisiteError
     pass
 
 
+class SellingCapturePrerequisiteError(SubstantiveCompletionPrerequisiteError):
+    pass
+
+
 class ViableFinalizationPrerequisiteError(SubstantiveCompletionPrerequisiteError):
     pass
 
@@ -80,6 +85,36 @@ class ProfitabilityArtifactState(str, Enum):
     NOT_ATTEMPTED = "NOT_ATTEMPTED"
     ONLY_FAILED = "ONLY_FAILED"
     SUCCESS_EXISTS = "SUCCESS_EXISTS"
+
+
+@dataclass(frozen=True)
+class EconomicEvidenceSnapshot:
+    evaluation_id: str
+    sourcing_report: EvaluationArtifact | None
+    acquisition_cost_findings: EvaluationArtifact | None
+    resale: EvaluationArtifact | None
+    selling_cost_findings: EvaluationArtifact | None
+
+    @property
+    def acquisition_ready(self) -> bool:
+        return (
+            self.sourcing_report is not None
+            and self.acquisition_cost_findings is not None
+            and self.acquisition_cost_findings.sequence_number
+            > self.sourcing_report.sequence_number
+        )
+
+    @property
+    def selling_ready(self) -> bool:
+        return (
+            self.resale is not None
+            and self.selling_cost_findings is not None
+            and self.selling_cost_findings.sequence_number > self.resale.sequence_number
+        )
+
+    @property
+    def economically_ready(self) -> bool:
+        return self.acquisition_ready and self.selling_ready
 
 
 def _utc_now() -> datetime:
@@ -712,47 +747,103 @@ class CandidateRepository:
                 connection, evaluation_id
             )
 
-    def require_acquisition_capture(self, evaluation_id: str) -> None:
+    def economic_evidence_snapshot(
+        self, evaluation_id: str
+    ) -> EconomicEvidenceSnapshot:
         with _connection(self.database_path) as connection:
-            if connection.execute(
-                "SELECT 1 FROM candidate_evaluations WHERE evaluation_id = ?",
-                (evaluation_id,),
-            ).fetchone() is None:
-                raise RecordNotFoundError(f"Evaluation not found: {evaluation_id}")
-            self._require_acquisition_capture(connection, evaluation_id)
+            return self._economic_evidence_snapshot(connection, evaluation_id)
+
+    @staticmethod
+    def _economic_evidence_snapshot(
+        connection: sqlite3.Connection, evaluation_id: str
+    ) -> EconomicEvidenceSnapshot:
+        artifact_types = (
+            EvaluationArtifactType.SOURCING_REPORT,
+            EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
+            EvaluationArtifactType.RESALE,
+            EvaluationArtifactType.SELLING_COST_FINDINGS,
+        )
+        if connection.execute(
+            "SELECT 1 FROM candidate_evaluations WHERE evaluation_id = ?",
+            (evaluation_id,),
+        ).fetchone() is None:
+            raise RecordNotFoundError(f"Evaluation not found: {evaluation_id}")
+        rows = connection.execute(
+            f"""
+            SELECT * FROM evaluation_artifacts
+            WHERE evaluation_id = ?
+              AND artifact_type IN ({", ".join("?" for _ in artifact_types)})
+            ORDER BY sequence_number DESC
+            """,
+            (evaluation_id, *(item.value for item in artifact_types)),
+        ).fetchall()
+
+        latest: dict[EvaluationArtifactType, EvaluationArtifact] = {}
+        for row in rows:
+            artifact = _artifact_from_row(row)
+            latest.setdefault(artifact.artifact_type, artifact)
+        return EconomicEvidenceSnapshot(
+            evaluation_id=evaluation_id,
+            sourcing_report=latest.get(EvaluationArtifactType.SOURCING_REPORT),
+            acquisition_cost_findings=latest.get(
+                EvaluationArtifactType.ACQUISITION_COST_FINDINGS
+            ),
+            resale=latest.get(EvaluationArtifactType.RESALE),
+            selling_cost_findings=latest.get(
+                EvaluationArtifactType.SELLING_COST_FINDINGS
+            ),
+        )
+
+    def require_acquisition_capture(self, evaluation_id: str) -> None:
+        snapshot = self.economic_evidence_snapshot(evaluation_id)
+        self._require_acquisition_snapshot(snapshot)
+
+    def require_selling_capture(self, evaluation_id: str) -> None:
+        snapshot = self.economic_evidence_snapshot(evaluation_id)
+        self._require_selling_snapshot(snapshot)
+
+    def require_economic_readiness(
+        self, evaluation_id: str
+    ) -> EconomicEvidenceSnapshot:
+        snapshot = self.economic_evidence_snapshot(evaluation_id)
+        self._require_acquisition_snapshot(snapshot)
+        self._require_selling_snapshot(snapshot)
+        return snapshot
+
+    @staticmethod
+    def _require_acquisition_snapshot(snapshot: EconomicEvidenceSnapshot) -> None:
+        if snapshot.sourcing_report is None:
+            raise AcquisitionCapturePrerequisiteError(
+                "Successful completion and Profitability require a substantive "
+                "Sourcing report and its acquisition-cost capture"
+            )
+        if not snapshot.acquisition_ready:
+            raise AcquisitionCapturePrerequisiteError(
+                "The latest substantive Sourcing report does not have a successful "
+                "acquisition-cost capture"
+            )
+
+    @staticmethod
+    def _require_selling_snapshot(snapshot: EconomicEvidenceSnapshot) -> None:
+        if snapshot.resale is None:
+            raise SellingCapturePrerequisiteError(
+                "Profitability requires a substantive Resale result and its "
+                "selling-cost capture"
+            )
+        if not snapshot.selling_ready:
+            raise SellingCapturePrerequisiteError(
+                "The latest substantive Resale result does not have a successful "
+                "selling-cost capture"
+            )
 
     @staticmethod
     def _require_acquisition_capture(
         connection: sqlite3.Connection, evaluation_id: str
     ) -> None:
-        rows = connection.execute(
-            """
-            SELECT artifact_type, MAX(sequence_number) AS latest_sequence
-            FROM evaluation_artifacts
-            WHERE evaluation_id = ? AND artifact_type IN (?, ?)
-            GROUP BY artifact_type
-            """,
-            (
-                evaluation_id,
-                EvaluationArtifactType.SOURCING_REPORT.value,
-                EvaluationArtifactType.ACQUISITION_COST_FINDINGS.value,
-            ),
-        ).fetchall()
-        latest = {row["artifact_type"]: row["latest_sequence"] for row in rows}
-        sourcing_sequence = latest.get(EvaluationArtifactType.SOURCING_REPORT.value)
-        capture_sequence = latest.get(
-            EvaluationArtifactType.ACQUISITION_COST_FINDINGS.value
+        snapshot = CandidateRepository._economic_evidence_snapshot(
+            connection, evaluation_id
         )
-        if sourcing_sequence is None:
-            raise AcquisitionCapturePrerequisiteError(
-                "Successful completion and Profitability require a substantive "
-                "Sourcing report and its acquisition-cost capture"
-            )
-        if capture_sequence is None or capture_sequence <= sourcing_sequence:
-            raise AcquisitionCapturePrerequisiteError(
-                "The latest substantive Sourcing report does not have a successful "
-                "acquisition-cost capture"
-            )
+        CandidateRepository._require_acquisition_snapshot(snapshot)
 
     @staticmethod
     def _profitability_artifact_state(

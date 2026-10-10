@@ -23,6 +23,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.persistence import (
     CandidateRepository,
+    EconomicEvidenceSnapshot,
     RecordNotFoundError,
 )
 from arbitrage.lead_routing_state import LeadRoutingState
@@ -277,6 +278,18 @@ class CandidateWorkflow:
     def require_acquisition_capture(self) -> None:
         _, evaluation = self._active_records()
         self.repository.require_acquisition_capture(evaluation.evaluation_id)
+
+    def economic_evidence_snapshot(self) -> EconomicEvidenceSnapshot:
+        _, evaluation = self._active_records()
+        return self.repository.economic_evidence_snapshot(evaluation.evaluation_id)
+
+    def require_selling_capture(self) -> None:
+        _, evaluation = self._active_records()
+        self.repository.require_selling_capture(evaluation.evaluation_id)
+
+    def require_economic_readiness(self) -> EconomicEvidenceSnapshot:
+        _, evaluation = self._active_records()
+        return self.repository.require_economic_readiness(evaluation.evaluation_id)
 
     def apply_manager_judgment(
         self, judgment: ManagerEvaluationJudgment

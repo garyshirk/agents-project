@@ -29,6 +29,9 @@ from arbitrage.tools.profitability import calculate_profitability
 from tests.acquisition_readiness_fixtures import (
     append_acquisition_capture,
     append_acquisition_readiness,
+    append_economic_readiness,
+    append_selling_capture,
+    append_selling_readiness,
     append_sourcing_report,
 )
 from tests.test_lead_decision_contract import candidate_request
@@ -98,7 +101,7 @@ class AcquisitionReadinessTests(unittest.TestCase):
         ]
 
     def test_latest_sourcing_and_capture_allow_profitability_and_completion(self):
-        append_acquisition_readiness(self.repository, self.started.evaluation_id)
+        append_economic_readiness(self.repository, self.started.evaluation_id)
 
         result = self.invoke_profitability()
         completed = self.workflow.apply_manager_judgment(self.completed_judgment())
@@ -139,7 +142,7 @@ class AcquisitionReadinessTests(unittest.TestCase):
         self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
 
     def test_newer_sourcing_stales_prior_capture_and_new_capture_restores_readiness(self):
-        append_acquisition_readiness(self.repository, self.started.evaluation_id)
+        append_economic_readiness(self.repository, self.started.evaluation_id)
         append_sourcing_report(
             self.repository,
             self.started.evaluation_id,
@@ -178,7 +181,7 @@ class AcquisitionReadinessTests(unittest.TestCase):
         self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
 
     def test_wait_resume_uses_persisted_readiness(self):
-        append_acquisition_readiness(self.repository, self.started.evaluation_id)
+        append_economic_readiness(self.repository, self.started.evaluation_id)
         self.workflow.update_candidate_evaluation(
             UpdateCandidateEvaluationRequest(
                 action=WorkflowEvaluationAction.WAIT_FOR_INPUT
@@ -192,18 +195,19 @@ class AcquisitionReadinessTests(unittest.TestCase):
 
         self.assertTrue(result.success)
 
-    def test_intervening_resale_does_not_change_readiness(self):
+    def test_new_resale_stales_selling_readiness_until_new_capture(self):
         from tests.test_candidate_persistence import CandidatePersistenceTests
 
-        append_sourcing_report(self.repository, self.started.evaluation_id)
+        append_acquisition_readiness(self.repository, self.started.evaluation_id)
+        append_selling_readiness(self.repository, self.started.evaluation_id)
         resale = CandidatePersistenceTests().resale_result()
         self.repository.append_evaluation_artifact(
             self.started.evaluation_id,
             artifact_type=EvaluationArtifactType.RESALE,
             payload_json=resale.model_dump_json(),
         )
-        append_acquisition_capture(self.repository, self.started.evaluation_id)
-
+        self.assertFalse(self.invoke_profitability().success)
+        append_selling_capture(self.repository, self.started.evaluation_id)
         self.assertTrue(self.invoke_profitability().success)
 
     def test_no_sourcing_blocks_successful_finalization_but_not_failure(self):
