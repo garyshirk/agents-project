@@ -167,7 +167,7 @@ class EvaluationCaptureHookTests(unittest.TestCase):
             resale,
         )
 
-    def test_repeated_calls_are_preserved_in_order_and_latest_fields_advance(self):
+    def test_profitability_is_not_duplicated_by_generic_capture_hook(self):
         first = "First natural-language sourcing report"
         second = "Second natural-language sourcing report"
         profit = ProfitabilityToolResult(
@@ -180,7 +180,7 @@ class EvaluationCaptureHookTests(unittest.TestCase):
         self.capture("calculate_profitability", profit)
         self.capture("calculate_profitability", profit.model_dump_json())
         artifacts = self.repository.list_evaluation_artifacts(self.started.evaluation_id)
-        self.assertEqual([item.sequence_number for item in artifacts], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([item.sequence_number for item in artifacts], [1, 2, 3, 4])
         self.assertEqual(
             [item.artifact_type for item in artifacts],
             [
@@ -188,13 +188,11 @@ class EvaluationCaptureHookTests(unittest.TestCase):
                 EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
                 EvaluationArtifactType.SOURCING_REPORT,
                 EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
-                EvaluationArtifactType.PROFITABILITY,
-                EvaluationArtifactType.PROFITABILITY,
             ],
         )
         evaluation = self.repository.get_evaluation(self.started.evaluation_id)
         self.assertIsNone(evaluation.sourcing_result)
-        self.assertEqual(evaluation.profitability_result, profit.result)
+        self.assertIsNone(evaluation.profitability_result)
 
     def test_sourcing_hook_propagates_capture_failure_after_preserving_report(self):
         async def fail_capture(_workflow, _report):

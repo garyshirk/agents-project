@@ -10,7 +10,6 @@ from arbitrage.acquisition_capture import run_required_acquisition_capture
 from arbitrage.selling_capture import run_required_selling_capture
 from arbitrage.contracts import (
     EvaluationArtifactType,
-    ProfitabilityToolResult,
     ResaleResult,
     SourcingTextReport,
 )
@@ -23,10 +22,6 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
         "consult_resale_agent": (
             EvaluationArtifactType.RESALE,
             ResaleResult,
-        ),
-        "calculate_profitability": (
-            EvaluationArtifactType.PROFITABILITY,
-            ProfitabilityToolResult,
         ),
     }
 

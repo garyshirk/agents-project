@@ -50,15 +50,7 @@ class EconomicEvidenceSnapshotTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def invoke_profitability(self) -> tuple[ProfitabilityToolResult, str]:
-        from tests.test_profitability_tool import ProfitabilityFunctionToolTests
-
-        arguments = json.dumps(
-            {
-                "request": ProfitabilityFunctionToolTests.request().model_dump(
-                    mode="json"
-                )
-            }
-        )
+        arguments = "{}"
         call = ResponseFunctionToolCall(
             arguments=arguments,
             call_id="snapshot-profitability",
@@ -205,7 +197,7 @@ class EconomicEvidenceSnapshotTests(unittest.TestCase):
         self.assertIn("selling-cost capture", result.error)
         self.assertNotIn("[debug] Profitability Tool called", output)
         self.assertNotIn("[debug] Profitability deterministic result", output)
-        self.assertNotIn(
+        self.assertIn(
             EvaluationArtifactType.PROFITABILITY,
             [
                 item.artifact_type
@@ -214,8 +206,14 @@ class EconomicEvidenceSnapshotTests(unittest.TestCase):
                 )
             ],
         )
+        artifact = self.repository.list_evaluation_artifacts(
+            self.started.evaluation_id
+        )[-1]
+        self.assertFalse(
+            ProfitabilityToolResult.model_validate_json(artifact.payload_json).success
+        )
 
-    def test_finalization_rule_and_tool_schema_are_unchanged(self):
+    def test_finalization_rule_is_unchanged_and_tool_schema_is_zero_argument(self):
         append_acquisition_readiness(self.repository, self.started.evaluation_id)
         judgment = ManagerEvaluationJudgment(
             evaluation_outcome=ManagerEvaluationOutcome.COMPLETED,
@@ -229,17 +227,8 @@ class EconomicEvidenceSnapshotTests(unittest.TestCase):
         completed = self.workflow.apply_manager_judgment(judgment)
 
         self.assertEqual(completed.evaluation_status.value, "COMPLETED")
-        self.assertEqual(
-            set(calculate_profitability.params_json_schema["properties"]["request"]),
-            {"$ref"},
-        )
-        self.assertEqual(
-            set(
-                calculate_profitability.params_json_schema["$defs"]
-                ["ProfitabilityRequest"]["properties"]
-            ),
-            set(ProfitabilityRequest.model_fields),
-        )
+        self.assertEqual(calculate_profitability.params_json_schema["properties"], {})
+        self.assertEqual(calculate_profitability.params_json_schema["required"], [])
 
 
 if __name__ == "__main__":

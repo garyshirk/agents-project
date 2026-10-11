@@ -151,8 +151,8 @@ class ArbitrageCoordinator:
                         f"{error}. A failed calculate_profitability invocation is not a "
                         "substantive result and is not equivalent to a successful result "
                         "whose status is INSUFFICIENT_INPUTS. "
-                        "Inspect its error, correct and retry the Profitability request when "
-                        "possible, then return a new structured judgment. Do not declare "
+                        "Inspect its error, obtain or refresh the required evidence, and retry "
+                        "Profitability when possible, then return a new structured judgment. Do not declare "
                         "VIABLE based only on gross spread."
                     )
                 judgment = substantive_evaluation(

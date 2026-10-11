@@ -61,15 +61,7 @@ class AcquisitionReadinessTests(unittest.TestCase):
         )
 
     def invoke_profitability(self) -> ProfitabilityToolResult:
-        from tests.test_profitability_tool import ProfitabilityFunctionToolTests
-
-        arguments = json.dumps(
-            {
-                "request": ProfitabilityFunctionToolTests.request().model_dump(
-                    mode="json"
-                )
-            }
-        )
+        arguments = "{}"
         call = ResponseFunctionToolCall(
             arguments=arguments,
             call_id="readiness-profitability",
@@ -119,7 +111,10 @@ class AcquisitionReadinessTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("does not have a successful acquisition-cost capture", result.error)
         self.assertNotIn("[debug] Profitability Tool called", output.getvalue())
-        self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
+        self.assertEqual(
+            self.artifact_types(),
+            [EvaluationArtifactType.SOURCING_REPORT, EvaluationArtifactType.PROFITABILITY],
+        )
 
     def test_missing_capture_blocks_actual_completed_finalization(self):
         append_sourcing_report(self.repository, self.started.evaluation_id)
@@ -129,7 +124,10 @@ class AcquisitionReadinessTests(unittest.TestCase):
 
         evaluation = self.repository.get_evaluation(self.started.evaluation_id)
         self.assertEqual(evaluation.status, EvaluationStatus.IN_PROGRESS)
-        self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
+        self.assertEqual(
+            self.artifact_types(),
+            [EvaluationArtifactType.SOURCING_REPORT],
+        )
 
     def test_failed_capture_leaves_no_success_artifact_and_blocks_both_boundaries(self):
         append_sourcing_report(self.repository, self.started.evaluation_id)
@@ -139,7 +137,10 @@ class AcquisitionReadinessTests(unittest.TestCase):
             self.workflow.apply_manager_judgment(self.completed_judgment())
 
         self.assertFalse(profitability.success)
-        self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
+        self.assertEqual(
+            self.artifact_types(),
+            [EvaluationArtifactType.SOURCING_REPORT, EvaluationArtifactType.PROFITABILITY],
+        )
 
     def test_newer_sourcing_stales_prior_capture_and_new_capture_restores_readiness(self):
         append_economic_readiness(self.repository, self.started.evaluation_id)
@@ -178,7 +179,10 @@ class AcquisitionReadinessTests(unittest.TestCase):
         result = self.invoke_profitability()
 
         self.assertFalse(result.success)
-        self.assertEqual(self.artifact_types(), [EvaluationArtifactType.SOURCING_REPORT])
+        self.assertEqual(
+            self.artifact_types(),
+            [EvaluationArtifactType.SOURCING_REPORT, EvaluationArtifactType.PROFITABILITY],
+        )
 
     def test_wait_resume_uses_persisted_readiness(self):
         append_economic_readiness(self.repository, self.started.evaluation_id)

@@ -70,9 +70,13 @@ class OrchestrationPolicyTests(unittest.TestCase):
             ],
         )
 
-    def test_profitability_request_construction_semantics(self):
+    def test_profitability_evidence_and_application_assembly_semantics(self):
         instructions = agent.instructions
 
+        self.assertIn("Profitability inputs are assembled authoritatively", instructions)
+        self.assertIn("calculate_profitability takes no arguments", instructions)
+        self.assertIn("you cannot provide or override purchase price", instructions)
+        self.assertIn("Do not construct Profitability requests", instructions)
         self.assertIn("encode 13% as 13", instructions)
         self.assertIn("13.6% as 13.6", instructions)
         self.assertIn("never encode those as 0.13, 0.136, or 0.08", instructions)
@@ -80,7 +84,7 @@ class OrchestrationPolicyTests(unittest.TestCase):
         self.assertIn("zero-valued cost as a placeholder", instructions)
         self.assertIn("zero is actually known to be correct", instructions)
         self.assertIn("related_cost_ids with the exact cost_id", instructions)
-        self.assertIn("do not delete the UnknownInput or invent a value", instructions)
+        self.assertIn("do not delete the unknown or invent a value", instructions)
         self.assertIn("HUMAN_OBSERVED basis", instructions)
         self.assertIn("do not downgrade it to ASSUMED", instructions)
         self.assertIn("must not be promoted to independently verified condition", instructions)

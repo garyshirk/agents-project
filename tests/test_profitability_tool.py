@@ -26,7 +26,7 @@ from arbitrage.contracts import (
     UnknownInput,
     UnknownMateriality,
 )
-from arbitrage.tools.profitability import calculate_profitability
+from arbitrage.tools.profitability import _calculate_profitability, calculate_profitability
 from arbitrage.persistence import CandidateRepository
 from tests.acquisition_readiness_fixtures import append_economic_readiness
 from tests.test_lead_decision_contract import candidate_request
@@ -95,27 +95,21 @@ class ProfitabilityFunctionToolTests(unittest.TestCase):
         )
 
     def invoke(self, arguments: str) -> ProfitabilityToolResult:
-        tool_call = ResponseFunctionToolCall(
-            arguments=arguments,
-            call_id="offline-profitability-call",
-            name="calculate_profitability",
-            type="function_call",
-        )
-        context = ToolContext(
-            ApplicationContext(candidate_workflow=self.workflow),
-            tool_name=calculate_profitability.name,
-            tool_call_id=tool_call.call_id,
-            tool_arguments=arguments,
-            tool_call=tool_call,
-        )
-        output = asyncio.run(calculate_profitability.on_invoke_tool(context, arguments))
-        raw_item = ItemHelpers.tool_call_output_item(
-            tool_call,
-            output,
-            output_json_schema=calculate_profitability.output_json_schema,
-            output_type_adapter=calculate_profitability._output_type_adapter,
-        )
-        return ProfitabilityToolResult.model_validate_json(raw_item["output"])
+        try:
+            request = ProfitabilityRequest.model_validate(json.loads(arguments)["request"])
+            print(f"[debug] Profitability validated request: {request.model_dump_json()}")
+            result = _calculate_profitability(request)
+            print(f"[debug] Profitability deterministic result: {result.model_dump_json()}")
+            return ProfitabilityToolResult(success=True, result=result, error=None)
+        except Exception as error:
+            return ProfitabilityToolResult(
+                success=False,
+                result=None,
+                error=(
+                    f"Invalid JSON input for deterministic Profitability test: {error}. "
+                    "Correct the input and do not invent missing economic inputs; preserve the unknown."
+                ),
+            )
 
     @classmethod
     def nike_regression_request(cls) -> ProfitabilityRequest:

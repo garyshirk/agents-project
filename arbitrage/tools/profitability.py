@@ -1,3 +1,4 @@
+import json
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from agents import RunContextWrapper, function_tool
@@ -25,6 +26,7 @@ from arbitrage.persistence import (
     AcquisitionCapturePrerequisiteError,
     SellingCapturePrerequisiteError,
 )
+from arbitrage.profitability_request_assembly import assemble_profitability_request
 
 
 MONEY_QUANTUM = Decimal("0.01")
@@ -394,16 +396,34 @@ def profitability_tool_error(
         )
     else:
         message = (
-            f"{error}. Correct the Profitability request and retry when appropriate; "
-            "do not invent missing economic inputs. If one economic input is both "
-            "unresolved and an assumed zero-valued cost, remove the zero placeholder "
-            "and preserve the unknown."
+            f"{error}. Obtain or refresh the required evidence and retry when appropriate; "
+            "the application assembles Profitability inputs, so do not invent or supply "
+            "economic inputs through the tool call."
         )
-    return ProfitabilityToolResult(
+    tool_result = ProfitabilityToolResult(
         success=False,
         result=None,
         error=message,
-    ).model_dump_json()
+    )
+    try:
+        _context.context.candidate_workflow.record_profitability_failure(
+            tool_result,
+            context_json=json.dumps(
+                {
+                    "tool_call_id": getattr(_context, "tool_call_id", None),
+                    "tool_name": "calculate_profitability",
+                    "success": False,
+                    "failure_stage": "tool_execution",
+                    "error_type": type(error).__name__,
+                    "error": message,
+                },
+                sort_keys=True,
+            ),
+        )
+    except Exception:
+        # The original tool failure remains authoritative when failure capture is unavailable.
+        pass
+    return tool_result.model_dump_json()
 
 
 @function_tool(
@@ -412,16 +432,73 @@ def profitability_tool_error(
 )
 def calculate_profitability(
     context: RunContextWrapper[ApplicationContext],
-    request: ProfitabilityRequest,
 ) -> ProfitabilityToolResult:
-    """Calculate deterministic economics for one acquisition and sale scenario pairing."""
-    context.context.candidate_workflow.require_economic_readiness()
+    """Calculate deterministic economics from the active Evaluation's captured evidence."""
+    raw_arguments = getattr(context, "tool_arguments", None)
+    if raw_arguments:
+        supplied_arguments = json.loads(raw_arguments)
+        if supplied_arguments:
+            raise ValueError(
+                "calculate_profitability accepts no model-authored arguments"
+            )
+    workflow = context.context.candidate_workflow
+    candidate, evaluation, evidence = workflow.active_profitability_inputs()
+    assembly = assemble_profitability_request(candidate, evaluation, evidence)
+    if not assembly.success:
+        error = "; ".join(
+            f"{failure.code.value}: {failure.message}"
+            for failure in assembly.failures
+        )
+        tool_result = ProfitabilityToolResult(
+            success=False,
+            result=None,
+            error=error,
+        )
+        workflow.record_profitability_failure(
+            tool_result,
+            context_json=json.dumps(
+                {
+                    "tool_call_id": getattr(context, "tool_call_id", None),
+                    "tool_name": "calculate_profitability",
+                    "success": False,
+                    "failure_stage": "request_assembly",
+                    "assembly_failures": [
+                        failure.model_dump(mode="json")
+                        for failure in assembly.failures
+                    ],
+                },
+                sort_keys=True,
+            ),
+        )
+        return tool_result
+    assert assembly.request is not None
+    assert assembly.provenance is not None
+    request = assembly.request
     print("[debug] Profitability Tool called")
     print(f"[debug] Profitability validated request: {request.model_dump_json()}")
     result = _calculate_profitability(request)
     print(f"[debug] Profitability deterministic result: {result.model_dump_json()}")
-    return ProfitabilityToolResult(
+    tool_result = ProfitabilityToolResult(
         success=True,
         result=result,
         error=None,
     )
+    calculation_context = json.dumps(
+        {
+            "tool_call_id": getattr(context, "tool_call_id", None),
+            "tool_name": "calculate_profitability",
+            "request": request.model_dump(mode="json"),
+            "provenance": assembly.provenance.model_dump(mode="json"),
+            "result": result.model_dump(mode="json"),
+            "status": result.status.value,
+            "success": True,
+        },
+        sort_keys=True,
+    )
+    workflow.record_profitability_calculation(
+        evaluation.evaluation_id,
+        request,
+        tool_result,
+        context_json=calculation_context,
+    )
+    return tool_result

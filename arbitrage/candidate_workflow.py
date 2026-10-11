@@ -15,6 +15,8 @@ from arbitrage.contracts import (
     FinishCandidateEvaluationRequest,
     ManagerEvaluationJudgment,
     ManagerEvaluationOutcome,
+    ProfitabilityRequest,
+    ProfitabilityToolResult,
     ResaleResult,
     SourcingTextReport,
     StartCandidateEvaluationRequest,
@@ -290,6 +292,73 @@ class CandidateWorkflow:
     def require_economic_readiness(self) -> EconomicEvidenceSnapshot:
         _, evaluation = self._active_records()
         return self.repository.require_economic_readiness(evaluation.evaluation_id)
+
+    def active_profitability_inputs(self):
+        candidate, evaluation = self._active_records()
+        if evaluation.status != EvaluationStatus.IN_PROGRESS:
+            raise CandidateWorkflowError(
+                "Profitability requires the active Evaluation to be IN_PROGRESS"
+            )
+        evidence = self.repository.require_economic_readiness(
+            evaluation.evaluation_id
+        )
+        return candidate, evaluation, evidence
+
+    def record_profitability_calculation(
+        self,
+        evaluation_id: str,
+        request: ProfitabilityRequest,
+        result: ProfitabilityToolResult,
+        *,
+        context_json: str,
+    ) -> EvaluationArtifact:
+        _, evaluation = self._active_records()
+        if evaluation.evaluation_id != evaluation_id:
+            raise CandidateWorkflowError(
+                "Active Evaluation changed before Profitability persistence"
+            )
+        if not result.success or result.result is None:
+            raise CandidateWorkflowError(
+                "Only successful Profitability calculations may be persisted"
+            )
+        calculation_context = json.loads(context_json)
+        if calculation_context.get("request") != request.model_dump(mode="json"):
+            raise CandidateWorkflowError(
+                "Persisted Profitability request does not match the calculated request"
+            )
+        if calculation_context.get("result") != result.result.model_dump(mode="json"):
+            raise CandidateWorkflowError(
+                "Persisted Profitability result does not match the calculated result"
+            )
+        artifact = self.repository.append_evaluation_artifact(
+            evaluation_id,
+            artifact_type=EvaluationArtifactType.PROFITABILITY,
+            payload_json=result.model_dump_json(),
+            context_json=context_json,
+        )
+        print(
+            "[debug] Profitability calculation captured: "
+            f"{evaluation_id} / artifact {artifact.artifact_id}"
+        )
+        return artifact
+
+    def record_profitability_failure(
+        self,
+        result: ProfitabilityToolResult,
+        *,
+        context_json: str,
+    ) -> EvaluationArtifact:
+        _, evaluation = self._active_records()
+        if result.success or result.result is not None:
+            raise CandidateWorkflowError(
+                "Profitability failure persistence requires a failed tool result"
+            )
+        return self.repository.append_evaluation_artifact(
+            evaluation.evaluation_id,
+            artifact_type=EvaluationArtifactType.PROFITABILITY,
+            payload_json=result.model_dump_json(),
+            context_json=context_json,
+        )
 
     def apply_manager_judgment(
         self, judgment: ManagerEvaluationJudgment
