@@ -28,6 +28,44 @@ class ProductCondition(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class ProductAudience(str, Enum):
+    MENS = "MENS"
+    WOMENS = "WOMENS"
+    UNISEX = "UNISEX"
+    YOUTH = "YOUTH"
+    CHILDRENS = "CHILDRENS"
+    OTHER = "OTHER"
+
+
+class ProductSizeSystem(str, Enum):
+    US_MENS = "US_MENS"
+    US_WOMENS = "US_WOMENS"
+    US_UNISEX = "US_UNISEX"
+    US_YOUTH = "US_YOUTH"
+    UK = "UK"
+    EU = "EU"
+    CM = "CM"
+    ALPHA = "ALPHA"
+    OTHER = "OTHER"
+
+
+class ProductPackaging(str, Enum):
+    COMPLETE_ORIGINAL = "COMPLETE_ORIGINAL"
+    ORIGINAL_INCOMPLETE = "ORIGINAL_INCOMPLETE"
+    NO_ORIGINAL = "NO_ORIGINAL"
+    REPLACEMENT = "REPLACEMENT"
+    OTHER = "OTHER"
+
+
+class MaterialVariantAttributes(BaseModel):
+    colorway: str | None = None
+    audience: ProductAudience | None = None
+    size_value: str | None = None
+    size_system: ProductSizeSystem | None = None
+    width: str | None = None
+    packaging: ProductPackaging | None = None
+
+
 class ProductIdentity(BaseModel):
     brand: str | None
     product_name: str
@@ -36,6 +74,7 @@ class ProductIdentity(BaseModel):
     variant: str | None
     condition: ProductCondition
     package_quantity: int | None
+    material_variant: MaterialVariantAttributes | None = None
 
 
 class IdentityConfidence(str, Enum):
