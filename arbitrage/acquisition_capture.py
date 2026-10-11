@@ -13,11 +13,14 @@ from agents import (
 from arbitrage.acquisition_capture_state import AcquisitionCaptureState
 from arbitrage.candidate_workflow import CandidateWorkflow
 from arbitrage.contracts import (
+    CostType,
     EconomicCostFinding,
     EconomicCostFindingsResult,
     EvaluationArtifactType,
     SourcingTextReport,
+    UnknownMateriality,
 )
+from arbitrage.profitability_assembly import PURCHASE_PRICE_COST_ID
 
 
 @dataclass
@@ -32,6 +35,43 @@ def acquisition_capture_tool_error(
     return f"Acquisition cost findings were not recorded: {error}"
 
 
+def validate_acquisition_purchase_price(
+    findings: list[EconomicCostFinding],
+) -> None:
+    purchase_prices = [
+        finding for finding in findings if finding.cost_id == PURCHASE_PRICE_COST_ID
+    ]
+    if len(purchase_prices) != 1:
+        raise ValueError(
+            f"acquisition findings require exactly one {PURCHASE_PRICE_COST_ID} finding"
+        )
+    if purchase_prices[0].cost_type != CostType.FIXED_PER_UNIT:
+        raise ValueError(
+            f"{PURCHASE_PRICE_COST_ID} must use FIXED_PER_UNIT cost_type"
+        )
+    purchase_price = purchase_prices[0]
+    if purchase_price.value is None:
+        if (
+            purchase_price.estimated_low is not None
+            or purchase_price.estimated_high is not None
+            or purchase_price.modeled_value is not None
+            or purchase_price.unresolved_materiality != UnknownMateriality.MATERIAL
+        ):
+            raise ValueError(
+                f"unresolved {PURCHASE_PRICE_COST_ID} must have no numeric or modeled "
+                "value and must use MATERIAL unresolved_materiality"
+            )
+    elif (
+        purchase_price.estimated_low is not None
+        or purchase_price.estimated_high is not None
+        or purchase_price.modeled_value is not None
+        or purchase_price.unresolved_materiality is not None
+    ):
+        raise ValueError(
+            f"resolved {PURCHASE_PRICE_COST_ID} must use one exact supported value"
+        )
+
+
 @function_tool(
     name_override="record_acquisition_cost_findings",
     failure_error_function=acquisition_capture_tool_error,
@@ -42,8 +82,9 @@ def record_captured_acquisition_cost_findings(
 ) -> str:
     """Record all defensible acquisition-side cost findings for this Sourcing report."""
     state = context.context.capture_state
-    state.begin_action()
     result = EconomicCostFindingsResult(findings=findings)
+    validate_acquisition_purchase_price(result.findings)
+    state.begin_action()
     context_json = json.dumps(
         {
             "tool_call_id": getattr(context, "tool_call_id", None),
@@ -69,8 +110,16 @@ acquisition_capture_agent = Agent(
         "identity does not promote a human-observed price to VERIFIED. Preserve VERIFIED, ESTIMATED, "
         "and ASSUMED evidence according to its actual basis, including source references and "
         "limitations. For a known cost, put the amount in value and its evidence classification "
-        "in basis; unresolved_materiality must be null, not NON_MATERIAL. Do not duplicate an "
-        "observed amount in modeled_value: without a distinct modeling assumption, modeled_value "
+        "in basis; unresolved_materiality must be null, not NON_MATERIAL. "
+        "Always include exactly one finding with cost_id acquisition_purchase_price for the "
+        "per-unit price required to acquire one sellable inventory unit from the identified "
+        "source, and give it FIXED_PER_UNIT cost_type. Preserve its supported HUMAN_OBSERVED, "
+        "VERIFIED, ESTIMATED, or other accurate basis. If the purchase price is unknown, still "
+        "include acquisition_purchase_price with value null and unresolved_materiality MATERIAL; "
+        "do not invent a modeled price or zero. Record sales tax and every other additional cost "
+        "as separate findings, and never emit a duplicate purchase-price finding. "
+        "Do not duplicate an observed amount in modeled_value: without a distinct modeling "
+        "assumption, modeled_value "
         "and modeled_value_basis must be null and modeled_value_is_conservative must be false. "
         "Reserve modeled_value for a distinct assumed modeling amount, always use ASSUMED as its "
         "basis, and explain the assumption and limitations. For a materially unresolved cost "

@@ -34,7 +34,14 @@ from arbitrage.contracts import (
     SourcingTextReport,
     UnknownMateriality,
 )
-from arbitrage.persistence import CandidateRepository
+from arbitrage.persistence import (
+    AcquisitionCapturePrerequisiteError,
+    CandidateRepository,
+)
+from arbitrage.profitability_assembly import (
+    PURCHASE_PRICE_COST_ID,
+    project_economic_findings,
+)
 from arbitrage import application
 from arbitrage.specialists.sourcing import sourcing_agent
 from tests.test_lead_decision_contract import candidate_request
@@ -148,7 +155,7 @@ class AcquisitionCaptureTests(unittest.TestCase):
     @staticmethod
     def purchase_finding() -> EconomicCostFinding:
         return EconomicCostFinding(
-            cost_id="purchase_price",
+            cost_id=PURCHASE_PRICE_COST_ID,
             name="Purchase price",
             cost_type=CostType.FIXED_PER_UNIT,
             value="39.99",
@@ -170,6 +177,22 @@ class AcquisitionCaptureTests(unittest.TestCase):
             notes="New in original box",
         )
 
+    @classmethod
+    def verified_purchase_finding(cls) -> EconomicCostFinding:
+        values = cls.purchase_finding().model_dump()
+        values["basis"] = InputBasis.VERIFIED
+        return EconomicCostFinding.model_validate(values)
+
+    @classmethod
+    def unresolved_purchase_finding(cls) -> EconomicCostFinding:
+        values = cls.purchase_finding().model_dump()
+        values.update(
+            value=None,
+            basis=None,
+            unresolved_materiality=UnknownMateriality.MATERIAL,
+        )
+        return EconomicCostFinding.model_validate(values)
+
     @staticmethod
     def unresolved_tax() -> EconomicCostFinding:
         return EconomicCostFinding(
@@ -188,6 +211,26 @@ class AcquisitionCaptureTests(unittest.TestCase):
             source_references=[],
             limitations=["Tax jurisdiction and rate are not known"],
             notes=None,
+        )
+
+    @staticmethod
+    def known_packaging_cost() -> EconomicCostFinding:
+        return EconomicCostFinding(
+            cost_id="acquisition_packaging",
+            name="Protective packaging",
+            cost_type=CostType.FIXED_PER_UNIT,
+            value="1.25",
+            estimated_low=None,
+            estimated_high=None,
+            currency="USD",
+            basis=InputBasis.VERIFIED,
+            modeled_value=None,
+            modeled_value_basis=None,
+            modeled_value_is_conservative=False,
+            unresolved_materiality=None,
+            source_references=[],
+            limitations=[],
+            notes="Known separate per-unit cost",
         )
 
     def invoke(self, findings: list[EconomicCostFinding]) -> str:
@@ -267,6 +310,155 @@ class AcquisitionCaptureTests(unittest.TestCase):
         self.assertNotIn("acquisition_shipping", [item.cost_id for item in findings])
         self.assertFalse(any(item.value == 0 for item in findings if item.value is not None))
 
+    def test_verified_purchase_price_is_accepted(self):
+        finding = self.verified_purchase_finding()
+
+        output = self.invoke([finding])
+
+        self.assertIn("Recorded 1", output)
+        self.assertEqual(self.state.complete().findings, [finding])
+        self.assertEqual(len(self.artifacts()), 1)
+
+    def test_unresolved_material_purchase_price_is_accepted_without_fabrication(self):
+        finding = self.unresolved_purchase_finding()
+
+        output = self.invoke([finding])
+
+        self.assertIn("Recorded 1", output)
+        persisted = self.state.complete().findings[0]
+        self.assertIsNone(persisted.value)
+        self.assertIsNone(persisted.modeled_value)
+        self.assertEqual(
+            persisted.unresolved_materiality, UnknownMateriality.MATERIAL
+        )
+
+    def test_valid_additional_acquisition_cost_is_recorded_separately(self):
+        purchase = self.purchase_finding()
+        packaging = self.known_packaging_cost()
+
+        output = self.invoke([purchase, packaging])
+
+        self.assertIn("Recorded 2", output)
+        persisted = self.state.complete().findings
+        self.assertEqual(persisted, [purchase, packaging])
+        self.assertEqual(
+            [item.cost_id for item in persisted],
+            [PURCHASE_PRICE_COST_ID, "acquisition_packaging"],
+        )
+
+    def assert_recording_rejected(self, findings, message):
+        output = self.invoke(findings)
+        self.assertIn(message, output)
+        self.assertEqual(self.state.attempts, 0)
+        self.assertEqual(self.state.successful_results, [])
+        self.assertEqual(self.artifacts(), [])
+        with self.assertRaises(AcquisitionCaptureError):
+            self.state.complete()
+
+    def test_missing_reserved_purchase_price_is_rejected_before_action(self):
+        self.assert_recording_rejected(
+            [self.unresolved_tax()],
+            f"exactly one {PURCHASE_PRICE_COST_ID}",
+        )
+
+    def test_duplicate_reserved_purchase_price_is_rejected_before_action(self):
+        self.assert_recording_rejected(
+            [self.purchase_finding(), self.verified_purchase_finding()],
+            f"exactly one {PURCHASE_PRICE_COST_ID}",
+        )
+
+    def test_wrong_purchase_price_cost_type_is_rejected_before_action(self):
+        values = self.purchase_finding().model_dump()
+        values["cost_type"] = CostType.FIXED_PER_BATCH
+        self.assert_recording_rejected(
+            [EconomicCostFinding.model_validate(values)],
+            "must use FIXED_PER_UNIT",
+        )
+
+    def test_unresolved_purchase_price_rejects_modeled_or_nonmaterial_substitutes(self):
+        nonmaterial_values = self.unresolved_purchase_finding().model_dump()
+        nonmaterial_values["unresolved_materiality"] = UnknownMateriality.NON_MATERIAL
+        self.assert_recording_rejected(
+            [EconomicCostFinding.model_validate(nonmaterial_values)],
+            "must have no numeric or modeled value and must use MATERIAL",
+        )
+
+        modeled_values = self.unresolved_purchase_finding().model_dump()
+        modeled_values.update(
+            modeled_value="39.99",
+            modeled_value_basis=InputBasis.ASSUMED,
+            modeled_value_is_conservative=True,
+        )
+        self.assert_recording_rejected(
+            [EconomicCostFinding.model_validate(modeled_values)],
+            "must have no numeric or modeled value and must use MATERIAL",
+        )
+
+    def test_historical_alias_does_not_satisfy_reserved_identifier(self):
+        for historical_id in ("acq_purchase_price", "purchase_price"):
+            with self.subTest(historical_id=historical_id):
+                values = self.purchase_finding().model_dump()
+                values["cost_id"] = historical_id
+                self.assert_recording_rejected(
+                    [EconomicCostFinding.model_validate(values)],
+                    f"exactly one {PURCHASE_PRICE_COST_ID}",
+                )
+
+    def test_rejected_recording_does_not_satisfy_readiness(self):
+        self.repository.append_evaluation_artifact(
+            self.started.evaluation_id,
+            artifact_type=EvaluationArtifactType.SOURCING_REPORT,
+            payload_json=SourcingTextReport(
+                report_text="Substantive sourcing evidence."
+            ).model_dump_json(),
+        )
+
+        output = self.invoke([self.unresolved_tax()])
+        self.assertIn(f"exactly one {PURCHASE_PRICE_COST_ID}", output)
+        self.assertEqual(self.state.attempts, 0)
+        self.assertEqual(self.state.successful_results, [])
+        self.assertEqual(
+            [artifact.artifact_type for artifact in self.artifacts()],
+            [EvaluationArtifactType.SOURCING_REPORT],
+        )
+        with self.assertRaisesRegex(
+            AcquisitionCapturePrerequisiteError, "does not have a successful"
+        ):
+            self.repository.require_acquisition_capture(self.started.evaluation_id)
+
+    def test_corrected_recording_can_succeed_after_rejected_recording(self):
+        rejected = self.invoke([self.unresolved_tax()])
+        accepted = self.invoke([self.purchase_finding(), self.unresolved_tax()])
+
+        self.assertIn("exactly one", rejected)
+        self.assertIn("Recorded 2", accepted)
+        self.assertEqual(self.state.attempts, 1)
+        self.assertEqual(len(self.state.successful_results), 1)
+        self.assertEqual(len(self.artifacts()), 1)
+
+    def test_capture_output_projects_only_when_purchase_price_is_resolved(self):
+        selling = EconomicCostFindingsResult(findings=[self.unresolved_tax()])
+        resolved = EconomicCostFindingsResult(
+            findings=[self.purchase_finding(), self.unresolved_tax()]
+        )
+        unresolved = EconomicCostFindingsResult(
+            findings=[self.unresolved_purchase_finding(), self.unresolved_tax()]
+        )
+
+        resolved_projection = project_economic_findings(
+            resolved, selling, currency="USD"
+        )
+        unresolved_projection = project_economic_findings(
+            unresolved, selling, currency="USD"
+        )
+
+        self.assertTrue(resolved_projection.valid)
+        self.assertEqual(str(resolved_projection.unit_purchase_price), "39.99")
+        self.assertFalse(unresolved_projection.valid)
+        self.assertTrue(
+            any("resolved FIXED_PER_UNIT" in reason for reason in unresolved_projection.failure_reasons)
+        )
+
     def test_failed_live_payload_exposes_both_independent_semantic_errors(self):
         with self.assertRaisesRegex(
             ValidationError, "known value cannot also have unresolved materiality"
@@ -321,11 +513,15 @@ class AcquisitionCaptureTests(unittest.TestCase):
         self.assertIn("Do not duplicate an observed amount in modeled_value", instructions)
         self.assertIn("always use ASSUMED as its basis", instructions)
         self.assertIn("unknown sales tax remains unresolved MATERIAL", instructions)
+        self.assertIn("exactly one finding with cost_id acquisition_purchase_price", instructions)
+        self.assertIn("FIXED_PER_UNIT cost_type", instructions)
+        self.assertIn("value null and unresolved_materiality MATERIAL", instructions)
+        self.assertIn("additional cost as separate findings", instructions)
 
     def test_multiple_actions_are_rejected_without_second_artifact(self):
         self.invoke([self.purchase_finding()])
 
-        output = self.invoke([self.unresolved_tax()])
+        output = self.invoke([self.purchase_finding(), self.unresolved_tax()])
 
         self.assertIn("exactly one terminal action", output)
         self.assertEqual(len(self.artifacts()), 1)

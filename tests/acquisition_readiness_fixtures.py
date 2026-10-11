@@ -8,6 +8,7 @@ from arbitrage.contracts import (
     SourcingTextReport,
 )
 from arbitrage.persistence import CandidateRepository
+from arbitrage.profitability_assembly import PURCHASE_PRICE_COST_ID
 
 
 def append_sourcing_report(
@@ -29,7 +30,7 @@ def append_acquisition_capture(
     result = EconomicCostFindingsResult(
         findings=[
             EconomicCostFinding(
-                cost_id="purchase_price",
+                cost_id=PURCHASE_PRICE_COST_ID,
                 name="Purchase price",
                 cost_type=CostType.FIXED_PER_UNIT,
                 value="39.99",
