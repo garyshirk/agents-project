@@ -96,6 +96,30 @@ class ApplicationOwnedProfitabilityTests(unittest.TestCase):
             ],
         )
 
+    def test_identity_failure_is_persisted_without_arithmetic(self):
+        append_economic_readiness(self.repository, self.started.evaluation_id)
+        snapshot = self.workflow.economic_evidence_snapshot()
+        from arbitrage.contracts import ResaleResult
+        resale = ResaleResult.model_validate_json(snapshot.resale.payload_json)
+        resale.researched_identity.material_variant.size_value = "11"
+        self.repository.append_evaluation_artifact(
+            self.started.evaluation_id,
+            artifact_type=EvaluationArtifactType.RESALE,
+            payload_json=resale.model_dump_json(),
+        )
+        from tests.acquisition_readiness_fixtures import append_selling_capture
+        append_selling_capture(self.repository, self.started.evaluation_id)
+        with patch("arbitrage.tools.profitability._calculate_profitability") as engine:
+            result = self.invoke()
+        engine.assert_not_called()
+        self.assertFalse(result.success)
+        self.assertEqual(self.successful_profitability_artifacts(), [])
+        context = json.loads(self.profitability_artifacts()[0].context_json)
+        decision = context["assembly_failures"][0]["identity_decision"]
+        self.assertFalse(decision["accepted"])
+        self.assertIn("material_variant.size_value", decision["conflicting_fields"])
+        self.assertIsNone(self.repository.get_evaluation(self.started.evaluation_id).profitability_result)
+
     def test_model_authored_economic_inputs_are_rejected(self):
         append_economic_readiness(self.repository, self.started.evaluation_id)
 
@@ -124,6 +148,9 @@ class ApplicationOwnedProfitabilityTests(unittest.TestCase):
         )
         self.assertEqual(persisted, result)
         context = json.loads(artifacts[0].context_json)
+        self.assertTrue(context["provenance"]["identity_decision"]["accepted"])
+        self.assertEqual(context["provenance"]["identity_decision"]["policy_version"],
+                         "v1c-identity-acceptance-v1")
         engine.assert_called_once()
         self.assertEqual(
             engine.call_args.args[0],

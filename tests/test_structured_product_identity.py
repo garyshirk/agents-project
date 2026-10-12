@@ -25,7 +25,7 @@ from arbitrage.contracts import (
 from arbitrage.lead_routing import route_candidate_ready
 from arbitrage.orchestration import resale_agent_tool
 from arbitrage.persistence import CandidateRepository
-from arbitrage.profitability_request_assembly import _identity_conflicts
+from arbitrage.profitability_request_assembly import evaluate_identity_acceptance
 
 
 class StructuredProductIdentityTests(unittest.TestCase):
@@ -218,7 +218,7 @@ class StructuredProductIdentityTests(unittest.TestCase):
         lead_schema_text = json.dumps(route_candidate_ready.params_json_schema)
         self.assertIn('"material_variant"', lead_schema_text)
 
-    def test_existing_identity_comparison_behavior_is_unchanged(self):
+    def test_structured_identity_conflicts_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = CandidateRepository(Path(directory) / "identity.db")
             candidate = repository.create_candidate(
@@ -249,12 +249,13 @@ class StructuredProductIdentityTests(unittest.TestCase):
                 )
             )
 
-            conflicts = _identity_conflicts(
-                candidate,
+            decision = evaluate_identity_acceptance(
+                candidate.product_identity,
                 self.resale(different_structured_detail),
             )
 
-        self.assertEqual(conflicts, [])
+        self.assertFalse(decision.accepted)
+        self.assertIn("material_variant.colorway", decision.conflicting_fields)
 
 
 if __name__ == "__main__":

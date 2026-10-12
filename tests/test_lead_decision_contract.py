@@ -27,6 +27,7 @@ def candidate_request() -> StartCandidateEvaluationRequest:
             variant="Men's size 10",
             condition=ProductCondition.NEW,
             package_quantity=1,
+            material_variant={"colorway": "Black", "audience": "MENS", "size_value": "10", "size_system": "US_MENS", "width": None, "packaging": "COMPLETE_ORIGINAL"},
         ),
         acquisition_source=CandidateSource(
             source_kind="PHYSICAL_STORE",

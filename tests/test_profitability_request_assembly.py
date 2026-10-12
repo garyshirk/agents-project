@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -44,12 +45,138 @@ from arbitrage.profitability_assembly import PURCHASE_PRICE_COST_ID
 from arbitrage.profitability_request_assembly import (
     ASSEMBLY_POLICY_VERSION,
     AssemblyFailureCode,
+    AssemblyFailure,
+    ProfitabilityRequestProvenance,
+    evaluate_identity_acceptance,
     assemble_profitability_request,
 )
 from arbitrage.tools.profitability import _calculate_cost, _calculate_profitability
 
 
 class ProfitabilityRequestAssemblyTests(unittest.TestCase):
+    def test_optional_omissions_exact_and_strong_have_equal_policy(self):
+        for quality in (MatchQuality.EXACT, MatchQuality.STRONG):
+            for omitted in ("packaging", "width", "sizing"):
+                identity = self.identity()
+                if omitted == "sizing":
+                    identity.material_variant.size_value = None
+                    identity.material_variant.size_system = None
+                else:
+                    setattr(identity.material_variant, omitted, None)
+                decision = evaluate_identity_acceptance(
+                    identity, self.resale(researched_identity=identity, identity_match=quality)
+                )
+                self.assertTrue(decision.accepted)
+                self.assertIn("I4", decision.rule_ids)
+                self.assertNotEqual(decision.allowed_unresolved_fields, [])
+                self.assertNotIn("material_variant.width", decision.matched_fields)
+
+    def test_one_sided_and_partial_sizing_block(self):
+        for name in ("size_value", "size_system", "packaging", "colorway", "width", "audience"):
+            left, right = self.identity(), self.identity()
+            if name == "width":
+                left.material_variant.width = "Wide"
+            else:
+                setattr(right.material_variant, name, None)
+            decision = evaluate_identity_acceptance(left, self.resale(researched_identity=right))
+            self.assertFalse(decision.accepted)
+            self.assertIn(f"material_variant.{name}", decision.blocking_fields)
+        left, right = self.identity(), self.identity()
+        left.material_variant.size_value = right.material_variant.size_value = None
+        self.assertFalse(evaluate_identity_acceptance(left, self.resale(researched_identity=right)).accepted)
+
+    def test_agent_assessments_and_missing_core_failures(self):
+        for quality, code in (
+            (MatchQuality.IMPERFECT, AssemblyFailureCode.RESALE_IDENTITY_IMPERFECT),
+            (MatchQuality.AMBIGUOUS, AssemblyFailureCode.INSUFFICIENT_IDENTITY_EVIDENCE),
+        ):
+            result = self.assemble(snapshot=self.snapshot(resale=self.resale(identity_match=quality)))
+            self.assertEqual(result.failures[0].code, code)
+            self.assertEqual(result.failures[0].identity_decision.resale_identity_match, quality)
+        for changes in ({"model_number": None, "upc_gtin": None},
+                        {"condition": "UNKNOWN"}, {"package_quantity": None}):
+            candidate = self.candidate().model_copy(update={"product_identity": self.identity(**changes)})
+            result = self.assemble(candidate=candidate, snapshot=self.snapshot(
+                resale=self.resale(researched_identity=self.identity(**changes))))
+            self.assertEqual(result.failures[0].code, AssemblyFailureCode.INSUFFICIENT_IDENTITY_EVIDENCE)
+
+    def test_legacy_nike_raw_wording_is_insufficient_not_conflicting(self):
+        left = self.identity(material_variant=None, variant="Men's Black/Anthracite/Black, size 10")
+        right = self.identity(material_variant=None, variant="Black/Anthracite/Black, men's US size 10, original box")
+        candidate = self.candidate().model_copy(update={"product_identity": left})
+        result = self.assemble(candidate=candidate, snapshot=self.snapshot(resale=self.resale(researched_identity=right)))
+        self.assertEqual(result.failures[0].code, AssemblyFailureCode.INSUFFICIENT_IDENTITY_EVIDENCE)
+        self.assertEqual(result.failures[0].identity_decision.conflicting_fields, [])
+        self.assertIsNone(result.request)
+        self.assertIsNone(result.provenance)
+
+    def test_multiple_conflicts_and_condition_precedence(self):
+        candidate = self.candidate().model_copy(update={"product_identity": self.identity(upc_gtin="123")})
+        right = self.identity(condition="USED", upc_gtin="123")
+        right.material_variant.size_value = "11"
+        right.material_variant.colorway = "White"
+        result = self.assemble(candidate=candidate, snapshot=self.snapshot(resale=self.resale(
+            researched_identity=right, identity_match=MatchQuality.AMBIGUOUS)))
+        self.assertEqual(result.failures[0].code, AssemblyFailureCode.CONDITION_CONFLICT)
+        self.assertEqual(result.failures[0].identity_decision.conflicting_fields,
+                         ["condition", "material_variant.colorway", "material_variant.size_value"])
+
+    def test_size_and_color_conflicts_override_agent_uncertainty(self):
+        for name, value in (("size_value", "11"), ("colorway", "White")):
+            right = self.identity()
+            setattr(right.material_variant, name, value)
+            result = self.assemble(snapshot=self.snapshot(resale=self.resale(
+                researched_identity=right, identity_match=MatchQuality.IMPERFECT)))
+            self.assertEqual(result.failures[0].code, AssemblyFailureCode.IDENTITY_CONFLICT)
+
+    def test_identity_provenance_compatibility_and_repeatability(self):
+        result = self.assemble()
+        decision = result.provenance.identity_decision
+        self.assertTrue(decision.accepted)
+        self.assertEqual(decision, self.assemble().provenance.identity_decision)
+        old = result.provenance.model_dump(mode="json")
+        old.pop("identity_decision")
+        self.assertIsNone(ProfitabilityRequestProvenance.model_validate(old).identity_decision)
+        self.assertIsNone(AssemblyFailure(code="IDENTITY_CONFLICT", message="old").identity_decision)
+        with patch("arbitrage.profitability_request_assembly.compare_product_identity",
+                   wraps=__import__("arbitrage.identity_comparison", fromlist=["compare_product_identity"]).compare_product_identity) as compare:
+            evaluate_identity_acceptance(self.identity(), self.resale())
+            compare.assert_called_once()
+
+    def test_accepted_incomplete_comparator_outcome_is_preserved(self):
+        # An alternate identifier present only on one side does not defeat an agreeing model.
+        left = self.identity(upc_gtin="123")
+        decision = evaluate_identity_acceptance(left, self.resale())
+        self.assertTrue(decision.accepted)
+        self.assertEqual(decision.comparison_outcome.value, "INSUFFICIENT_IDENTITY_EVIDENCE")
+        self.assertIn("upc_gtin", decision.allowed_unresolved_fields)
+
+    def test_nonfootwear_optional_sizing_omissions(self):
+        left = self.identity(product_name="Camera", model_number="Camera-1",
+                             material_variant={})
+        decision = evaluate_identity_acceptance(left, self.resale(researched_identity=left))
+        self.assertTrue(decision.accepted)
+        self.assertIn("material_variant.size_system", decision.allowed_unresolved_fields)
+
+    def test_acceptance_does_not_mutate_inputs_and_raw_wording_is_preserved(self):
+        left = self.identity(variant="Candidate wording")
+        resale = self.resale(researched_identity=self.identity(variant="Resale wording"))
+        before = (left.model_dump_json(), resale.model_dump_json())
+        decision = evaluate_identity_acceptance(left, resale)
+        self.assertTrue(decision.accepted)
+        self.assertEqual(before, (left.model_dump_json(), resale.model_dump_json()))
+        candidate = self.candidate().model_copy(update={"product_identity": left})
+        result = self.assemble(candidate=candidate, snapshot=self.snapshot(resale=resale))
+        self.assertEqual(result.request.acquisition.product_identity, left)
+
+    def test_failed_identity_decision_round_trip(self):
+        result = self.assemble(snapshot=self.snapshot(resale=self.resale(identity_match="AMBIGUOUS")))
+        failure = result.failures[0]
+        restored = AssemblyFailure.model_validate_json(failure.model_dump_json())
+        self.assertEqual(restored, failure)
+        self.assertEqual(restored.identity_decision.comparison_outcome.value, "MATCH")
+        self.assertFalse(restored.identity_decision.accepted)
+
     @staticmethod
     def identity(**changes) -> ProductIdentity:
         values = {
@@ -60,6 +187,7 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
             "variant": "Men's size 10",
             "condition": ProductCondition.NEW,
             "package_quantity": 1,
+            "material_variant": {"colorway": "Black", "audience": "MENS", "size_value": "10", "size_system": "US_MENS", "width": None, "packaging": "COMPLETE_ORIGINAL"},
         }
         values.update(changes)
         return ProductIdentity(**values)

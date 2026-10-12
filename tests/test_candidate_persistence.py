@@ -78,6 +78,7 @@ class CandidatePersistenceTests(unittest.TestCase):
             variant=variant,
             condition=ProductCondition.NEW,
             package_quantity=1,
+            material_variant={"colorway": "Black", "audience": "MENS", "size_value": "10", "size_system": "US_MENS", "width": None, "packaging": "COMPLETE_ORIGINAL"},
         )
 
     @staticmethod

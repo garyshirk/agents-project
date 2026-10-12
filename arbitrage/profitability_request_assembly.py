@@ -14,6 +14,7 @@ from arbitrage.contracts import (
     HumanInputBasis,
     InputBasis,
     MatchQuality,
+    ProductIdentity,
     ProfitabilityRequest,
     ResaleResult,
     SaleScenario,
@@ -22,6 +23,7 @@ from arbitrage.contracts import (
     SourcingTextReport,
 )
 from arbitrage.persistence import EconomicEvidenceSnapshot
+from arbitrage.identity_comparison import IdentityComparisonOutcome, compare_product_identity
 from arbitrage.profitability_assembly import (
     EconomicFindingProjection,
     PURCHASE_PRICE_COST_ID,
@@ -31,6 +33,98 @@ from arbitrage.profitability_assembly import (
 
 ASSEMBLY_POLICY_VERSION = "v1c-step5c2-v1"
 ONE_UNIT_POLICY = "Model one acquired sellable unit and one resale order."
+IDENTITY_POLICY_VERSION = "v1c-identity-acceptance-v1"
+
+
+class IdentityAcceptanceDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    comparison_outcome: IdentityComparisonOutcome
+    matched_fields: list[str]
+    conflicting_fields: list[str]
+    unresolved_fields: list[str]
+    comparator_notes: list[str]
+    resale_identity_match: MatchQuality
+    policy_version: str = IDENTITY_POLICY_VERSION
+    accepted: bool
+    allowed_unresolved_fields: list[str]
+    blocking_fields: list[str]
+    rule_ids: list[str]
+    reasons: list[str]
+
+
+def evaluate_identity_acceptance(
+    candidate_identity: ProductIdentity, resale_result: ResaleResult
+) -> IdentityAcceptanceDecision:
+    """Apply I1–I6 without interpreting prose or changing supplied identities.
+
+    EXACT and STRONG share the same policy. Optional omissions are explicit
+    exceptions, not evidence that those attributes are economically immaterial.
+    """
+    comparison = compare_product_identity(candidate_identity, resale_result.researched_identity)
+    researched = resale_result.researched_identity
+    blocking = list(comparison.conflicting_fields)
+    rules = []
+    reasons = []
+    if blocking:
+        rules.append("I1")
+        reasons.append("Established structured identity contradictions block assembly.")
+    core_missing = []
+    if not any(field in comparison.matched_fields for field in ("model_number", "upc_gtin")):
+        core_missing.extend(field for field in ("model_number", "upc_gtin") if field not in blocking)
+    for field in ("condition", "package_quantity"):
+        if field in comparison.unresolved_fields:
+            core_missing.append(field)
+    if candidate_identity.material_variant is None or researched.material_variant is None:
+        core_missing.append("material_variant")
+    if core_missing:
+        blocking.extend(core_missing)
+        rules.append("I2")
+        reasons.append(f"Missing core identity evidence blocks assembly: {core_missing}.")
+    left = candidate_identity.material_variant
+    right = researched.material_variant
+    if left is not None and right is not None:
+        missing = []
+        for name in ("colorway", "audience", "width", "packaging"):
+            field = f"material_variant.{name}"
+            if field in comparison.unresolved_fields and (getattr(left, name) or getattr(right, name)):
+                missing.append(field)
+        if any(getattr(side, name) for side in (left, right) for name in ("size_value", "size_system")):
+            for name in ("size_value", "size_system"):
+                field = f"material_variant.{name}"
+                if field not in comparison.matched_fields and field not in comparison.conflicting_fields:
+                    missing.append(field)
+        if missing:
+            blocking.extend(missing)
+            rules.append("I3")
+            reasons.append(f"One-sided variant attributes or incomplete sizing evidence block assembly: {missing}.")
+    if resale_result.identity_match in (MatchQuality.IMPERFECT, MatchQuality.AMBIGUOUS):
+        blocking.append("identity_match")
+        rules.append("I5")
+        reasons.append(f"Resale assessment {resale_result.identity_match.value} blocks assembly.")
+    if left is None or right is None:
+        rules.append("I6")
+        reasons.append("Absent structured variants are not reconstructed from raw text.")
+    blocking = list(dict.fromkeys(blocking))
+    accepted = not blocking
+    allowed = list(comparison.unresolved_fields) if accepted else []
+    if accepted:
+        rules.extend(["I2", "I3", "I5"])
+        if allowed:
+            rules.append("I4")
+            reasons.append("Allowed optional omissions remain unknown; economic immateriality is not established.")
+        else:
+            reasons.append("Core and populated structured identity attributes agree.")
+    return IdentityAcceptanceDecision(
+        comparison_outcome=comparison.outcome,
+        matched_fields=list(comparison.matched_fields),
+        conflicting_fields=list(comparison.conflicting_fields),
+        unresolved_fields=list(comparison.unresolved_fields),
+        comparator_notes=list(comparison.notes),
+        resale_identity_match=resale_result.identity_match,
+        accepted=accepted, allowed_unresolved_fields=allowed,
+        blocking_fields=blocking, rule_ids=list(dict.fromkeys(rules)), reasons=reasons,
+    )
 
 
 class AssemblyFailureCode(str, Enum):
@@ -43,6 +137,8 @@ class AssemblyFailureCode(str, Enum):
     CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
     IDENTITY_CONFLICT = "IDENTITY_CONFLICT"
     CONDITION_CONFLICT = "CONDITION_CONFLICT"
+    INSUFFICIENT_IDENTITY_EVIDENCE = "INSUFFICIENT_IDENTITY_EVIDENCE"
+    RESALE_IDENTITY_IMPERFECT = "RESALE_IDENTITY_IMPERFECT"
     RESALE_PRICE = "RESALE_PRICE"
     QUANTITY = "QUANTITY"
     PROJECTION = "PROJECTION"
@@ -54,6 +150,7 @@ class AssemblyFailure(BaseModel):
 
     code: AssemblyFailureCode
     message: str
+    identity_decision: IdentityAcceptanceDecision | None = None
 
 
 class ArtifactProvenance(BaseModel):
@@ -107,6 +204,7 @@ class ProfitabilityRequestProvenance(BaseModel):
     unattributed_references: list[MarketplaceResearchReference]
     research_limitations: list[str]
     omitted_optional_fields: list[OmittedOptionalField]
+    identity_decision: IdentityAcceptanceDecision | None = None
 
 
 class ProfitabilityRequestAssemblyResult(BaseModel):
@@ -137,13 +235,14 @@ SOURCE_TYPE_BY_KIND = {
 
 
 def _failure(
-    code: AssemblyFailureCode, message: str
+    code: AssemblyFailureCode, message: str,
+    identity_decision: IdentityAcceptanceDecision | None = None,
 ) -> ProfitabilityRequestAssemblyResult:
     return ProfitabilityRequestAssemblyResult(
         success=False,
         request=None,
         provenance=None,
-        failures=[AssemblyFailure(code=code, message=message)],
+        failures=[AssemblyFailure(code=code, message=message, identity_decision=identity_decision)],
     )
 
 
@@ -206,34 +305,6 @@ def _classify_resale_references(candidate: CandidateRecord, resale: ResaleResult
         _deduplicate_references(comparative, seen),
         _deduplicate_references(unattributed, seen),
     )
-
-
-def _identity_conflicts(candidate: CandidateRecord, resale: ResaleResult) -> list[str]:
-    expected = candidate.product_identity
-    researched = resale.researched_identity
-    conflicts: list[str] = []
-    for field_name in ("brand", "model_number", "upc_gtin", "variant"):
-        left = getattr(expected, field_name)
-        right = getattr(researched, field_name)
-        if left is not None and right is not None and left.casefold() != right.casefold():
-            conflicts.append(field_name)
-    if (
-        expected.package_quantity is not None
-        and researched.package_quantity is not None
-        and expected.package_quantity != researched.package_quantity
-    ):
-        conflicts.append("package_quantity")
-    if (
-        expected.model_number is None
-        and expected.upc_gtin is None
-        and researched.model_number is None
-        and researched.upc_gtin is None
-        and expected.product_name.casefold() != researched.product_name.casefold()
-    ):
-        conflicts.append("product_name")
-    if resale.identity_match in {MatchQuality.IMPERFECT, MatchQuality.AMBIGUOUS}:
-        conflicts.append("identity_match")
-    return conflicts
 
 
 def _parse_artifacts(snapshot: EconomicEvidenceSnapshot):
@@ -394,17 +465,26 @@ def assemble_profitability_request(
             f"Acquisition currency {acquisition_currency} does not match resale currency {resale.currency}",
         )
 
-    if candidate.product_identity.condition != resale.researched_identity.condition:
+    identity_decision = evaluate_identity_acceptance(candidate.product_identity, resale)
+    if "condition" in identity_decision.conflicting_fields:
         return _failure(
             AssemblyFailureCode.CONDITION_CONFLICT,
             "Candidate and Resale researched conditions conflict",
+            identity_decision,
         )
-    identity_conflicts = _identity_conflicts(candidate, resale)
-    if identity_conflicts:
+    if identity_decision.conflicting_fields:
         return _failure(
             AssemblyFailureCode.IDENTITY_CONFLICT,
-            f"Candidate and Resale identities materially conflict: {identity_conflicts}",
+            f"Candidate and Resale identities materially conflict: {identity_decision.conflicting_fields}",
+            identity_decision,
         )
+    if not identity_decision.accepted:
+        code = (
+            AssemblyFailureCode.RESALE_IDENTITY_IMPERFECT
+            if resale.identity_match == MatchQuality.IMPERFECT
+            else AssemblyFailureCode.INSUFFICIENT_IDENTITY_EVIDENCE
+        )
+        return _failure(code, "; ".join(identity_decision.reasons), identity_decision)
 
     selected_prices, price_failure = _select_resale_prices(resale)
     if price_failure is not None:
@@ -621,6 +701,7 @@ def assemble_profitability_request(
         unattributed_references=unattributed_references,
         research_limitations=limitations,
         omitted_optional_fields=omitted,
+        identity_decision=identity_decision,
     )
     return ProfitabilityRequestAssemblyResult(
         success=True,
