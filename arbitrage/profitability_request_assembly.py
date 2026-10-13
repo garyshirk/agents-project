@@ -1,6 +1,7 @@
 from enum import Enum
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from arbitrage.contracts import (
     AcquisitionScenario,
@@ -11,12 +12,14 @@ from arbitrage.contracts import (
     EconomicCostFindingsResult,
     EvaluationArtifact,
     EvaluationArtifactType,
+    EvidenceType,
     HumanInputBasis,
     InputBasis,
     MatchQuality,
     ProductIdentity,
     ProfitabilityRequest,
     ResaleResult,
+    ResaleEvidenceSourceKind,
     SaleScenario,
     ScenarioSide,
     SourceType,
@@ -34,6 +37,7 @@ from arbitrage.profitability_assembly import (
 ASSEMBLY_POLICY_VERSION = "v1c-step5c2-v1"
 ONE_UNIT_POLICY = "Model one acquired sellable unit and one resale order."
 IDENTITY_POLICY_VERSION = "v1c-identity-acceptance-v1"
+SOURCE_CLASSIFICATION_POLICY_VERSION = "v1c-resale-source-classification-v1"
 
 
 class IdentityAcceptanceDecision(BaseModel):
@@ -181,12 +185,43 @@ class ResalePriceSelection(BaseModel):
     limitations: list[str]
 
 
+class ResaleSourceClassification(str, Enum):
+    DESTINATION = "DESTINATION"
+    COMPARATIVE = "COMPARATIVE"
+    UNATTRIBUTED = "UNATTRIBUTED"
+    RETAIL_REFERENCE = "RETAIL_REFERENCE"
+    CONFLICTING_SOURCE = "CONFLICTING_SOURCE"
+
+
+class SourceClassificationObservation(BaseModel):
+    """Original signals and local decision for one occurrence of a URL."""
+
+    model_config = ConfigDict(frozen=True)
+
+    url: str
+    origin: str
+    evidence_type: EvidenceType | None = None
+    marketplace: str | None = None
+    source_kind: ResaleEvidenceSourceKind | None = None
+    source_name: str | None = None
+    classification: ResaleSourceClassification
+    reason: str
+    signals: list[str]
+
+
 class MarketplaceResearchReference(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     url: str
     marketplace: str | None
     origin: str
+    evidence_type: EvidenceType | None = None
+    source_kind: ResaleEvidenceSourceKind | None = None
+    source_name: str | None = None
+    classification: ResaleSourceClassification | None = None
+    classification_reason: str | None = None
+    classification_signals: list[str] = Field(default_factory=list)
+    observations: list[SourceClassificationObservation] = Field(default_factory=list)
 
 
 class ProfitabilityRequestProvenance(BaseModel):
@@ -205,6 +240,9 @@ class ProfitabilityRequestProvenance(BaseModel):
     research_limitations: list[str]
     omitted_optional_fields: list[OmittedOptionalField]
     identity_decision: IdentityAcceptanceDecision | None = None
+    source_classification_policy_version: str | None = None
+    retail_references: list[MarketplaceResearchReference] = Field(default_factory=list)
+    conflicting_references: list[MarketplaceResearchReference] = Field(default_factory=list)
 
 
 class ProfitabilityRequestAssemblyResult(BaseModel):
@@ -258,53 +296,170 @@ def _deduplicate(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def _deduplicate_references(
-    references: list[MarketplaceResearchReference],
-    seen: set[str],
-) -> list[MarketplaceResearchReference]:
-    result: list[MarketplaceResearchReference] = []
-    for reference in references:
-        if reference.url not in seen:
-            seen.add(reference.url)
-            result.append(reference)
-    return result
+# Exact hosts only: no subdomain, regional-domain, alias, or redirect inference.
+# These mappings identify recognizable origin strings, not verified content.
+_MARKETPLACE_HOSTS = {
+    "ebay.com": "ebay",
+    "stockx.com": "stockx",
+    "mercari.com": "mercari",
+    "poshmark.com": "poshmark",
+    "amazon.com": "amazon",
+}
+_RETAIL_HOSTS = {
+    "shoepalace.com": "shoe palace",
+    "nike.com": "nike",
+    "target.com": "target",
+    "bestbuy.com": "best buy",
+}
+
+
+def _source_key(value: str | None) -> str:
+    return " ".join((value or "").split()).casefold()
+
+
+def _source_hostname(url: str) -> str | None:
+    """Parse a usable HTTP(S) URL without fetching it or resolving its host."""
+    try:
+        if any(character.isspace() or ord(character) < 32 for character in url):
+            return None
+        parsed = urlsplit(url)
+        if parsed.scheme.casefold() not in {"http", "https"}:
+            return None
+        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        # Reading port validates malformed/out-of-range ports.
+        parsed.port
+        host = parsed.hostname.casefold().rstrip(".")
+        return host[4:] if host.startswith("www.") else host
+    except ValueError:
+        return None
+
+
+def _classify_source_observation(
+    destination: str, *, url: str, origin: str,
+    marketplace: str | None, evidence_type: EvidenceType | None = None,
+    source_kind: ResaleEvidenceSourceKind | None = None,
+    source_name: str | None = None,
+) -> SourceClassificationObservation:
+    category = ResaleSourceClassification
+    destination_key = _source_key(destination)
+    label = _source_key(marketplace)
+    name = _source_key(source_name)
+    host = _source_hostname(url)
+    market_host = _MARKETPLACE_HOSTS.get(host)
+    retail_host = _RETAIL_HOSTS.get(host)
+    known_markets = set(_MARKETPLACE_HOSTS.values())
+    signals = [f"destination={destination_key}", f"hostname={host or 'unusable'}"]
+    if label:
+        signals.append(f"marketplace={label}")
+    if name:
+        signals.append(f"source_name={name}")
+    if source_kind is not None:
+        signals.append(f"source_kind={source_kind.value}")
+    if evidence_type is not None:
+        signals.append(f"evidence_type={evidence_type.value}")
+    retail = (
+        evidence_type == EvidenceType.RETAIL_REFERENCE
+        or source_kind in {ResaleEvidenceSourceKind.RETAILER, ResaleEvidenceSourceKind.MANUFACTURER}
+    )
+    conflicts = []
+    if label and name and label != name:
+        conflicts.append("Marketplace label and source name disagree.")
+    recognized_host = market_host or retail_host
+    for supplied in (label, name):
+        if recognized_host and supplied and recognized_host != supplied:
+            conflicts.append("Recognized URL origin contradicts supplied source identity.")
+    if source_kind == ResaleEvidenceSourceKind.DESTINATION_MARKETPLACE:
+        if retail or retail_host or any(value and value != destination_key for value in (label, name, market_host)):
+            conflicts.append("Destination source-kind claim contradicts another source signal.")
+    if source_kind == ResaleEvidenceSourceKind.OTHER_RESALE_MARKETPLACE:
+        if retail or retail_host or destination_key in (label, name, market_host):
+            conflicts.append("Other-marketplace source-kind claim contradicts another source signal.")
+    if retail and (
+        market_host or label in known_markets or name in known_markets
+        or (label and label == destination_key) or (name and name == destination_key)
+    ):
+        conflicts.append("Retail/manufacturer evidence also claims resale-marketplace origin.")
+    if source_kind in {ResaleEvidenceSourceKind.PRICE_AGGREGATOR, ResaleEvidenceSourceKind.OTHER} and market_host:
+        conflicts.append("Non-marketplace source-kind claim contradicts recognized marketplace origin.")
+    if retail_host and source_kind == ResaleEvidenceSourceKind.PRICE_AGGREGATOR:
+        conflicts.append("Aggregator source-kind claim contradicts recognized retail origin.")
+
+    if conflicts:
+        classification = category.CONFLICTING_SOURCE
+        reason = " ".join(dict.fromkeys(conflicts))
+    elif retail:
+        classification = category.RETAIL_REFERENCE
+        reason = "Retail evidence type or retailer/manufacturer source kind; not resale-marketplace evidence."
+    elif retail_host:
+        classification = category.UNATTRIBUTED
+        reason = "Recognized retail hostname without consistent explicit retail metadata."
+    elif market_host and (label == market_host or name == market_host):
+        classification = category.DESTINATION if market_host == destination_key else category.COMPARATIVE
+        reason = "Recognized marketplace hostname corroborates source metadata; content is not independently verified."
+    else:
+        classification = category.UNATTRIBUTED
+        reason = "Insufficient supported hostname corroboration for marketplace attribution."
+    return SourceClassificationObservation(
+        url=url, origin=origin, marketplace=marketplace, evidence_type=evidence_type,
+        source_kind=source_kind, source_name=source_name,
+        classification=classification, reason=reason, signals=signals,
+    )
 
 
 def _classify_resale_references(candidate: CandidateRecord, resale: ResaleResult):
-    destination_name = candidate.resale_destination.name.strip()
-    destination_key = destination_name.casefold()
-    destination: list[MarketplaceResearchReference] = []
-    comparative: list[MarketplaceResearchReference] = []
-    unattributed: list[MarketplaceResearchReference] = []
-    if candidate.resale_destination.url:
-        destination.append(
-            MarketplaceResearchReference(
-                url=candidate.resale_destination.url,
-                marketplace=destination_name,
-                origin="Candidate resale destination",
-            )
+    """Classify exact URL groups, preserving every occurrence for audit.
+
+    A known hostname plus an agreeing identity label is required for marketplace
+    attribution. Unsupported hosts stay unattributed even with agreeing labels.
+    Duplicate conflicts take precedence; incomplete duplicates downgrade a group.
+    """
+    groups: dict[str, list[SourceClassificationObservation]] = {}
+    destination = candidate.resale_destination
+    if destination.url:
+        observation = _classify_source_observation(
+            destination.name, url=destination.url, origin="Candidate resale destination",
+            marketplace=destination.name,
         )
+        groups.setdefault(observation.url, []).append(observation)
     for item in resale.evidence_items:
-        if not item.url:
+        if item.url is None:
             continue
-        marketplace = item.marketplace.strip()
-        reference = MarketplaceResearchReference(
-            url=item.url,
-            marketplace=marketplace or None,
-            origin="Resale evidence item",
+        observation = _classify_source_observation(
+            destination.name, url=item.url, origin="Resale evidence item",
+            marketplace=item.marketplace, evidence_type=item.evidence_type,
+            source_kind=item.source_kind, source_name=item.source_name,
         )
-        if not marketplace:
-            unattributed.append(reference)
-        elif marketplace.casefold() == destination_key:
-            destination.append(reference)
+        groups.setdefault(observation.url, []).append(observation)
+    category = ResaleSourceClassification
+    buckets = {value: [] for value in category}
+    for url, observations in groups.items():
+        classes = {item.classification for item in observations}
+        labels = {_source_key(value) for item in observations
+                  for value in (item.marketplace, item.source_name) if _source_key(value)}
+        attributed = classes - {category.UNATTRIBUTED}
+        if category.CONFLICTING_SOURCE in classes or len(attributed) > 1 or len(labels) > 1:
+            final = category.CONFLICTING_SOURCE
+            reason = "Conflicting source signals in one or more occurrences of this URL."
+        elif category.UNATTRIBUTED in classes:
+            final = category.UNATTRIBUTED
+            reason = "At least one occurrence lacks sufficient attribution; duplicate cannot promote it."
         else:
-            comparative.append(reference)
-    seen: set[str] = set()
-    return (
-        _deduplicate_references(destination, seen),
-        _deduplicate_references(comparative, seen),
-        _deduplicate_references(unattributed, seen),
-    )
+            final = observations[0].classification
+            reason = observations[0].reason
+        first = observations[0]
+        buckets[final].append(MarketplaceResearchReference(
+            url=url, marketplace=first.marketplace, origin=first.origin,
+            evidence_type=first.evidence_type, source_kind=first.source_kind,
+            source_name=first.source_name, classification=final,
+            classification_reason=reason,
+            classification_signals=list(dict.fromkeys(signal for item in observations for signal in item.signals)),
+            observations=observations,
+        ))
+    return tuple(buckets[value] for value in (
+        category.DESTINATION, category.COMPARATIVE, category.UNATTRIBUTED,
+        category.RETAIL_REFERENCE, category.CONFLICTING_SOURCE,
+    ))
 
 
 def _parse_artifacts(snapshot: EconomicEvidenceSnapshot):
@@ -581,6 +736,8 @@ def assemble_profitability_request(
         destination_references,
         comparative_references,
         unattributed_references,
+        retail_references,
+        conflicting_references,
     ) = _classify_resale_references(candidate, resale)
     destination_urls = [
         reference.url for reference in destination_references
@@ -702,6 +859,9 @@ def assemble_profitability_request(
         research_limitations=limitations,
         omitted_optional_fields=omitted,
         identity_decision=identity_decision,
+        source_classification_policy_version=SOURCE_CLASSIFICATION_POLICY_VERSION,
+        retail_references=retail_references,
+        conflicting_references=conflicting_references,
     )
     return ProfitabilityRequestAssemblyResult(
         success=True,

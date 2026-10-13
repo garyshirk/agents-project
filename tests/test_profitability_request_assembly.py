@@ -624,7 +624,7 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
             [item.url for item in result.provenance.comparative_references],
         )
 
-    def test_marketplace_references_are_classified_without_url_inference(self):
+    def test_unknown_hosts_are_unattributed_despite_marketplace_labels(self):
         ebay = self.resale_evidence(" eBaY ", "https://evidence.example/ebay")
         amazon = self.resale_evidence("Amazon", "https://evidence.example/amazon")
         walmart = self.resale_evidence("Walmart", "https://evidence.example/walmart")
@@ -637,19 +637,20 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
 
         self.assertEqual(
             result.request.sale.marketplace_references,
-            ["https://www.ebay.com", "https://evidence.example/ebay"],
+            ["https://www.ebay.com"],
         )
         self.assertEqual(
             [item.url for item in result.provenance.destination_references],
-            ["https://www.ebay.com", "https://evidence.example/ebay"],
+            ["https://www.ebay.com"],
         )
         self.assertEqual(
             [item.url for item in result.provenance.comparative_references],
-            ["https://evidence.example/amazon", "https://evidence.example/walmart"],
+            [],
         )
         self.assertEqual(
             [item.url for item in result.provenance.unattributed_references],
-            ["https://evidence.example/unknown"],
+            ["https://evidence.example/ebay", "https://evidence.example/amazon",
+             "https://evidence.example/walmart", "https://evidence.example/unknown"],
         )
 
     def test_candidate_destination_url_remains_when_no_evidence_items_exist(self):
@@ -701,11 +702,13 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.request.sale.marketplace_references, [duplicate])
+        self.assertEqual(result.request.sale.marketplace_references, [])
         all_references = [
             *result.provenance.destination_references,
             *result.provenance.comparative_references,
             *result.provenance.unattributed_references,
+            *result.provenance.retail_references,
+            *result.provenance.conflicting_references,
         ]
         self.assertEqual([item.url for item in all_references], [duplicate])
         selection_json = result.provenance.resale_price_selection.model_dump()

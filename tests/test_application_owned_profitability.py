@@ -120,6 +120,40 @@ class ApplicationOwnedProfitabilityTests(unittest.TestCase):
         self.assertIn("material_variant.size_value", decision["conflicting_fields"])
         self.assertIsNone(self.repository.get_evaluation(self.started.evaluation_id).profitability_result)
 
+    def test_conflicting_source_provenance_persists_without_blocking_calculation(self):
+        from arbitrage.contracts import ResaleResult
+        from tests.acquisition_readiness_fixtures import append_selling_capture
+        from tests.test_resale_evidence_source_contract import historical_item
+
+        append_economic_readiness(self.repository, self.started.evaluation_id)
+        resale = ResaleResult.model_validate_json(
+            self.workflow.economic_evidence_snapshot().resale.payload_json
+        )
+        payload = resale.model_dump(mode="json")
+        payload["evidence_items"] = [historical_item()]
+        resale = ResaleResult.model_validate(payload)
+        self.repository.append_evaluation_artifact(
+            self.started.evaluation_id,
+            artifact_type=EvaluationArtifactType.RESALE,
+            payload_json=resale.model_dump_json(),
+        )
+        append_selling_capture(self.repository, self.started.evaluation_id)
+
+        result = self.invoke()
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.result.status, ProfitabilityStatus.INSUFFICIENT_INPUTS)
+        artifacts = self.profitability_artifacts()
+        self.assertEqual(len(artifacts), 1)
+        context = json.loads(artifacts[0].context_json)
+        references = context["provenance"]["conflicting_references"]
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0]["classification"], "CONFLICTING_SOURCE")
+        self.assertEqual(references[0]["observations"][0]["marketplace"], "eBay")
+        self.assertNotIn(historical_item()["url"], context["request"]["sale"]["marketplace_references"])
+        self.assertEqual(self.repository.get_evaluation(self.started.evaluation_id).profitability_result,
+                         result.result)
+
     def test_model_authored_economic_inputs_are_rejected(self):
         append_economic_readiness(self.repository, self.started.evaluation_id)
 
@@ -151,6 +185,10 @@ class ApplicationOwnedProfitabilityTests(unittest.TestCase):
         self.assertTrue(context["provenance"]["identity_decision"]["accepted"])
         self.assertEqual(context["provenance"]["identity_decision"]["policy_version"],
                          "v1c-identity-acceptance-v1")
+        self.assertEqual(context["provenance"]["source_classification_policy_version"],
+                         "v1c-resale-source-classification-v1")
+        self.assertIn("retail_references", context["provenance"])
+        self.assertIn("conflicting_references", context["provenance"])
         engine.assert_called_once()
         self.assertEqual(
             engine.call_args.args[0],
