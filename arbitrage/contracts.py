@@ -279,6 +279,18 @@ class MatchQuality(str, Enum):
     AMBIGUOUS = "AMBIGUOUS"
 
 
+class ResaleEvidenceSourceKind(str, Enum):
+    """Reported source identity, not independent verification of the source URL."""
+
+    DESTINATION_MARKETPLACE = "DESTINATION_MARKETPLACE"
+    OTHER_RESALE_MARKETPLACE = "OTHER_RESALE_MARKETPLACE"
+    RETAILER = "RETAILER"
+    MANUFACTURER = "MANUFACTURER"
+    PRICE_AGGREGATOR = "PRICE_AGGREGATOR"
+    OTHER = "OTHER"
+    UNKNOWN = "UNKNOWN"
+
+
 class ResaleEvidenceItem(BaseModel):
     marketplace: str
     listing_title: str | None
@@ -294,6 +306,8 @@ class ResaleEvidenceItem(BaseModel):
     url: str | None
     match_quality: MatchQuality
     limitations: list[str]
+    source_kind: ResaleEvidenceSourceKind | None = None
+    source_name: str | None = None
 
     @model_validator(mode="after")
     def validate_verified_sale_bases(self) -> "ResaleEvidenceItem":
