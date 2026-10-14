@@ -12,6 +12,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.coordinator import ArbitrageCoordinator
 from arbitrage.evaluation_capture import EvaluationCaptureHooks
+from arbitrage.lead_routing_completion import LeadRoutingDiagnostics
 from arbitrage.persistence import CandidateRepository
 
 
@@ -76,17 +77,29 @@ def main() -> None:
 
             print("[debug] Lead Qualifier called")
             context.lead_routing.begin()
-            _qualification = Runner.run_sync(
-                lead_qualifier,
-                qualification_input(
-                    session,
-                    prompt,
-                    coordinator.qualification_context(),
-                ),
-                context=context,
-                run_config=run_config,
-            )
-            decision = context.lead_routing.complete()
+            diagnostics = LeadRoutingDiagnostics()
+            _qualification = None
+            runner_returned = False
+            try:
+                _qualification = Runner.run_sync(
+                    lead_qualifier,
+                    qualification_input(
+                        session,
+                        prompt,
+                        coordinator.qualification_context(),
+                    ),
+                    context=context,
+                    run_config=run_config,
+                    hooks=diagnostics,
+                )
+                runner_returned = True
+                decision = context.lead_routing.complete()
+            except Exception as error:
+                diagnostics.report_failure(
+                    context, runner_returned=runner_returned,
+                    result=_qualification, error=error,
+                )
+                raise
             print(f"[debug] Lead decision constructed: {decision.disposition.value}")
             print("[debug] Lead qualification completed")
 

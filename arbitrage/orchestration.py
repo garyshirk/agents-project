@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from agents import Agent, handoff
 
 from arbitrage.contracts import (
@@ -6,6 +8,7 @@ from arbitrage.contracts import (
     ResaleResult,
 )
 from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
+from arbitrage.lead_routing_completion import finish_lead_on_routing
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -137,6 +140,13 @@ lead_qualifier = Agent(
         "Python constructs the internal LeadDecision from the selected tool."
     ),
     tools=[sourcing_agent_tool, *LEAD_ROUTING_TOOLS],
+    reset_tool_choice=False,
+    tool_use_behavior=finish_lead_on_routing,
+)
+lead_qualifier.model_settings = replace(
+    lead_qualifier.model_settings,
+    tool_choice="required",
+    parallel_tool_calls=False,
 )
 
 
