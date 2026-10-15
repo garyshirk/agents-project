@@ -128,9 +128,14 @@ class IdentitySourceInstructionTests(unittest.TestCase):
             final_output=result, final_output_as=Mock(return_value=result), interruptions=[]
         )
         with patch.object(Runner, "run", new_callable=AsyncMock, return_value=run_result) as run:
+            candidate = SimpleNamespace(candidate_id="candidate", product_identity=request.product_identity)
+            from arbitrage.contracts import EvaluationStatus
+            evaluation = SimpleNamespace(evaluation_id="evaluation", status=EvaluationStatus.IN_PROGRESS)
+            workflow = SimpleNamespace(_active_records=Mock(return_value=(candidate, evaluation)))
+            intent = request.model_dump(mode="json", exclude={"product_identity"})
             with redirect_stdout(io.StringIO()):
                 asyncio.run(orchestration.resale_agent_tool.on_invoke_tool(
-                    RunContextWrapper(context=None), request.model_dump_json()
+                    RunContextWrapper(context=SimpleNamespace(candidate_workflow=workflow)), json.dumps(intent)
                 ))
         run.assert_awaited_once()
         self.assertIs(run.call_args.kwargs["starting_agent"], resale_agent)

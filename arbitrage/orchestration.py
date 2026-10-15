@@ -9,6 +9,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.lead_routing import LEAD_ROUTING_TOOLS
 from arbitrage.lead_routing_completion import finish_lead_on_routing
+from arbitrage.resale_delegation import bind_resale_target
 from arbitrage.specialists.budget import budget_agent
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
@@ -83,14 +84,14 @@ sourcing_agent_tool = sourcing_agent.as_tool(
     custom_output_extractor=sourcing_tool_output,
 )
 
-resale_agent_tool = resale_agent.as_tool(
+resale_agent_tool = bind_resale_target(resale_agent.as_tool(
     tool_name="consult_resale_agent",
     tool_description=(
         "Research resale-market evidence and realistic resale value for an exact product."
     ),
     custom_output_extractor=resale_tool_output,
     parameters=ResaleRequest,
-)
+))
 
 
 lead_qualifier = Agent(
@@ -159,6 +160,10 @@ lead_qualifier.model_settings = replace(
 agent = Agent(
     name="Arbitrage Manager",
     instructions=(
+        "For consult_resale_agent, provide research intent only: the application supplies the active "
+        "persisted Candidate target identity. Do not rewrite target attributes through prose or claim "
+        "that supported packaging values are unavailable. Candidate attributes are target assumptions, "
+        "not independently verified findings; preserve specialist discrepancies. "
         "Coordinate the research and evaluation of potential product-arbitrage opportunities by "
         "using specialist agents, preserving evidence and uncertainty, and producing well-supported "
         "research judgments for human review. Your authority ends at human review: never purchase "

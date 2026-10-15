@@ -65,6 +65,8 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
             capture = self._captured_tools.get(tool.name)
             if capture is None:
                 return
+            if tool.name == "consult_resale_agent" and isinstance(result, str) and result.startswith("Resale delegation rejected:"):
+                return
             artifact_type, result_type = capture
             if isinstance(result, result_type):
                 validated = result
@@ -85,6 +87,9 @@ class EvaluationCaptureHooks(RunHooks[ApplicationContext]):
                 "tool_call_id": getattr(context, "tool_call_id", None),
                 "tool_name": tool.name,
                 "arguments": arguments,
+                **({"authoritative_target": context.resale_target_provenance}
+                   if tool.name == "consult_resale_agent" and hasattr(context, "resale_target_provenance")
+                   else {}),
             }
         )
         context.context.candidate_workflow.capture_specialist_result(

@@ -112,10 +112,10 @@ class SourcingTextBoundaryTests(unittest.TestCase):
     def test_other_structured_boundaries_remain_unchanged(self):
         self.assertNotIn("acquisition_cost_findings", SourcingResult.model_fields)
         self.assertIs(resale_agent.output_type, ResaleResult)
-        self.assertEqual(resale_agent_tool.params_json_schema["title"], "ResaleRequest")
+        self.assertEqual(resale_agent_tool.params_json_schema["title"], "ResaleResearchIntent")
         self.assertEqual(
             set(resale_agent_tool.params_json_schema["properties"]),
-            set(ResaleRequest.model_fields),
+            set(ResaleRequest.model_fields) - {"product_identity"},
         )
         self.assertIsNone(lead_qualifier.output_type)
         self.assertIs(agent.output_type, ManagerEvaluationJudgment)

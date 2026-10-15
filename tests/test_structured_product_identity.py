@@ -211,10 +211,10 @@ class StructuredProductIdentityTests(unittest.TestCase):
         )
         self.assertEqual(
             set(resale_agent_tool.params_json_schema["properties"]),
-            set(ResaleRequest.model_fields),
+            set(ResaleRequest.model_fields) - {"product_identity"},
         )
         strict_schema_text = json.dumps(resale_agent_tool.params_json_schema)
-        self.assertIn('"material_variant"', strict_schema_text)
+        self.assertNotIn('"product_identity"', strict_schema_text)
         lead_schema_text = json.dumps(route_candidate_ready.params_json_schema)
         self.assertIn('"material_variant"', lead_schema_text)
 

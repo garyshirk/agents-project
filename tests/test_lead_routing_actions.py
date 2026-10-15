@@ -216,10 +216,10 @@ class LeadRoutingActionTests(unittest.TestCase):
         self.assertEqual(sourcing_agent_tool.params_json_schema["title"], "AgentAsToolInput")
         self.assertEqual([tool.name for tool in sourcing_agent.tools], ["web_search"])
         self.assertIs(resale_agent.output_type, ResaleResult)
-        self.assertEqual(resale_agent_tool.params_json_schema["title"], "ResaleRequest")
+        self.assertEqual(resale_agent_tool.params_json_schema["title"], "ResaleResearchIntent")
         self.assertEqual(
             set(resale_agent_tool.params_json_schema["properties"]),
-            set(ResaleRequest.model_fields),
+            set(ResaleRequest.model_fields) - {"product_identity"},
         )
         self.assertIs(agent.output_type, ManagerEvaluationJudgment)
         self.assertIn("calculate_profitability", [tool.name for tool in agent.tools])
