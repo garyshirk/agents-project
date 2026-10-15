@@ -820,10 +820,12 @@ class CandidateSource(BaseModel):
 
     @model_validator(mode="after")
     def validate_physical_location(self) -> "CandidateSource":
-        if self.source_kind == CandidateSourceKind.PHYSICAL_STORE and not (
-            self.physical_location or ""
-        ).strip():
-            raise ValueError("physical_location is required for PHYSICAL_STORE")
+        if (
+            self.source_kind == CandidateSourceKind.PHYSICAL_STORE
+            and self.physical_location is not None
+            and not self.physical_location.strip()
+        ):
+            raise ValueError("physical_location must be nonblank when supplied for PHYSICAL_STORE")
         return self
 
 

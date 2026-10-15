@@ -466,7 +466,7 @@ class CandidateWorkflowTests(unittest.TestCase):
         arguments = json.loads(
             json.dumps({"request": self.start_request().model_dump(mode="json")})
         )
-        arguments["request"]["acquisition_source"]["physical_location"] = None
+        arguments["request"]["acquisition_source"]["physical_location"] = "   "
 
         result = self.invoke_start_tool(json.dumps(arguments))
 
