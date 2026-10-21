@@ -109,6 +109,7 @@ class AvailabilityStatus(str, Enum):
 
 
 class CandidateIntakeSource(str, Enum):
+    HUMAN_SUBMISSION = "HUMAN_SUBMISSION"
     HUMAN_PHYSICAL = "HUMAN_PHYSICAL"
     HUMAN_ONLINE = "HUMAN_ONLINE"
     AUTONOMOUS_DISCOVERY = "AUTONOMOUS_DISCOVERY"
@@ -196,6 +197,23 @@ class HumanResaleInput(BaseModel):
         return self
 
 
+class IntakeChannel(str, Enum):
+    HUMAN_SUBMISSION = "HUMAN_SUBMISSION"
+    SYSTEM_DISCOVERY = "SYSTEM_DISCOVERY"
+
+
+class OpportunityEvidenceStatus(str, Enum):
+    HYPOTHETICAL = "HYPOTHETICAL"
+    HUMAN_REPORTED_IN_STORE = "HUMAN_REPORTED_IN_STORE"
+    HUMAN_REPORTED_ONLINE = "HUMAN_REPORTED_ONLINE"
+
+
+class IntakeProvenance(BaseModel):
+    channel: IntakeChannel | None = None
+    opportunity_status: OpportunityEvidenceStatus | None = None
+    supporting_user_excerpts: list[str] = Field(default_factory=list)
+
+
 class CandidateIntake(BaseModel):
     intake_source: CandidateIntakeSource
     product_identity: ProductIdentity | None
@@ -204,6 +222,7 @@ class CandidateIntake(BaseModel):
     acquisition: HumanAcquisitionInput | None
     resale: HumanResaleInput | None
     notes: str | None
+    provenance: IntakeProvenance | None = None
 
     @model_validator(mode="after")
     def validate_identity_provenance(self) -> "CandidateIntake":

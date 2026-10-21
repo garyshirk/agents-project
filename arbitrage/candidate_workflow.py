@@ -202,6 +202,9 @@ class CandidateWorkflow:
                 + candidate.product_identity.model_dump_json(),
                 "[Active Candidate acquisition source]\n"
                 + candidate.acquisition_source.model_dump_json(),
+                "[Intake provenance; not verification of economic facts]\n"
+                + (evaluation.intake_snapshot.provenance.model_dump_json()
+                   if evaluation.intake_snapshot and evaluation.intake_snapshot.provenance else "unspecified"),
                 "[Raw HUMAN_INPUT artifact payloads in sequence]\n"
                 + "\n".join(human_inputs),
                 "[Exact completed Sourcing report]\n" + sourcing_report.report_text,

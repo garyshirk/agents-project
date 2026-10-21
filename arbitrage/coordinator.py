@@ -15,6 +15,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.persistence import SubstantiveCompletionPrerequisiteError
 from arbitrage.blocked_evaluation import blocked_evaluation_details
+from arbitrage.intake_provenance import bind_human_intake
 
 
 SubstantiveEvaluation = Callable[
@@ -88,7 +89,7 @@ class ArbitrageCoordinator:
         print("[debug] Candidate creation started")
         try:
             workflow_result = self.candidate_workflow.start_candidate_evaluation(
-                decision.candidate_request
+                bind_human_intake(decision.candidate_request, human_input)
             )
         except Exception as error:
             return CoordinationResult(

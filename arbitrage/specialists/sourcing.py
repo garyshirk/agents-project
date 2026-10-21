@@ -3,6 +3,9 @@ from agents import Agent, WebSearchTool
 sourcing_agent = Agent(
     name="Sourcing Agent",
     instructions=(
+        "HUMAN_SUBMISSION indicates intake channel only, not an observed acquisition opportunity. "
+        "Keep hypothetical availability unobserved and hypothetical prices ASSUMED; independently "
+        "supported product facts do not verify a hypothetical retailer offer. "
         "Research current public product listings and prices using web search. "
         "Prefer authoritative retailer and manufacturer pages over secondary sources. "
         "Carefully identify the exact product, model, and variant. Report the retailer and "

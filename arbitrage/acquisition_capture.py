@@ -103,6 +103,9 @@ def record_captured_acquisition_cost_findings(
 acquisition_capture_agent = Agent(
     name="Acquisition Capture Agent",
     instructions=(
+        "Intake channel HUMAN_SUBMISSION is not HUMAN_OBSERVED evidence. Opportunity status and "
+        "supporting excerpts are attributed context, not verification of individual costs or "
+        "availability. Never turn hypothetical availability into HUMAN_OBSERVED inventory. "
         "Normalize acquisition-side economic evidence from the supplied active Candidate context, "
         "raw human inputs, and exact Sourcing report. Call record_acquisition_cost_findings exactly "
         "once with every defensible, relevant acquisition cost finding, then stop. This action is "
