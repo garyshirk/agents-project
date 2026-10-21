@@ -238,24 +238,21 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
         result = workflow.fail_active_evaluation("Test technical failure.")
         self.assertEqual(result.evaluation_status, EvaluationStatus.FAILED)
 
-    def test_coordinator_performs_one_bounded_same_evaluation_continuation(self):
+    def test_coordinator_blocks_without_automatic_same_evaluation_continuation(self):
         coordinator = ArbitrageCoordinator(self.workflow)
         calls = []
 
         def evaluate(result, continuation):
             calls.append((result.candidate_id, result.evaluation_id, continuation))
-            if continuation is None:
-                self.capture_failed()
-            else:
-                self.assertIn("no invocation completed successfully", continuation)
-                self.capture_successful()
+            self.assertIsNone(continuation)
+            self.capture_failed()
             return self.judgment()
 
         outcome = coordinator.coordinate(self.ready_decision(), "Lead", evaluate)
-        self.assertTrue(outcome.proceeded)
-        self.assertEqual(len(calls), 2)
+        self.assertFalse(outcome.proceeded)
+        self.assertEqual(len(calls), 1)
         self.assertEqual(len({(item[0], item[1]) for item in calls}), 1)
-        self.assertEqual(outcome.workflow_result.evaluation_status, EvaluationStatus.COMPLETED)
+        self.assertEqual(outcome.workflow_result.evaluation_status, EvaluationStatus.IN_PROGRESS)
         artifacts = self.repository.list_evaluation_artifacts(self.started.evaluation_id)
         self.assertEqual(
             [item.artifact_type for item in artifacts],
@@ -263,7 +260,6 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
                 EvaluationArtifactType.SOURCING_REPORT,
                 EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
                 EvaluationArtifactType.HUMAN_INPUT,
-                EvaluationArtifactType.PROFITABILITY,
                 EvaluationArtifactType.PROFITABILITY,
             ],
         )
@@ -279,28 +275,25 @@ class ProfitabilityFinalizationGuardTests(unittest.TestCase):
 
         outcome = coordinator.coordinate(self.ready_decision(), "Lead", evaluate)
         self.assertFalse(outcome.proceeded)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertIn("remains active", outcome.response)
         self.assert_still_active()
 
-    def test_inconclusive_failed_call_uses_same_bounded_continuation(self):
+    def test_inconclusive_failed_call_blocks_without_continuation(self):
         coordinator = ArbitrageCoordinator(self.workflow)
         calls = []
 
         def evaluate(result, continuation):
             calls.append((result.candidate_id, result.evaluation_id, continuation))
-            if continuation is None:
-                self.capture_failed()
-            else:
-                self.assertIn("not equivalent", continuation)
-                self.capture_successful(self.insufficient_result())
+            self.assertIsNone(continuation)
+            self.capture_failed()
             return self.judgment(CandidateConclusion.INCONCLUSIVE)
 
         outcome = coordinator.coordinate(self.ready_decision(), "Lead", evaluate)
-        self.assertTrue(outcome.proceeded)
-        self.assertEqual(len(calls), 2)
+        self.assertFalse(outcome.proceeded)
+        self.assertEqual(len(calls), 1)
         self.assertEqual(len({(item[0], item[1]) for item in calls}), 1)
-        self.assertEqual(outcome.workflow_result.evaluation_status, EvaluationStatus.COMPLETED)
+        self.assertEqual(outcome.workflow_result.evaluation_status, EvaluationStatus.IN_PROGRESS)
         self.assertEqual(outcome.workflow_result.candidate_lifecycle, CandidateLifecycleStatus.INVESTIGATING)
 
     @staticmethod

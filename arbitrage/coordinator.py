@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 
 from arbitrage.candidate_workflow import CandidateWorkflow
 from arbitrage.contracts import (
@@ -13,7 +14,7 @@ from arbitrage.contracts import (
     WorkflowEvaluationAction,
 )
 from arbitrage.persistence import SubstantiveCompletionPrerequisiteError
-from arbitrage.persistence import AcquisitionCapturePrerequisiteError
+from arbitrage.blocked_evaluation import blocked_evaluation_details
 
 
 SubstantiveEvaluation = Callable[
@@ -26,6 +27,7 @@ class CoordinationResult:
     proceeded: bool
     response: str
     workflow_result: CandidateWorkflowResult | None
+    blocked_details: dict | None = None
 
 
 class ArbitrageCoordinator:
@@ -133,56 +135,15 @@ class ArbitrageCoordinator:
                     "[debug] Substantive completion blocked: "
                     f"{error} / {workflow_result.evaluation_id}"
                 )
-                print(
-                    "[debug] Manager continuation requested after finalization guard"
+                details = blocked_evaluation_details(self.candidate_workflow, error)
+                response = (
+                    "Evaluation blocked; it remains active, not COMPLETED or VIABLE. "
+                    "Captured evidence was preserved. No automatic research continuation was started. "
+                    + json.dumps(details, sort_keys=True)
                 )
-                if isinstance(error, AcquisitionCapturePrerequisiteError):
-                    continuation = (
-                        "Deterministic finalization rejected the prior COMPLETED judgment: "
-                        f"{error}. Substantive Sourcing must complete and its required "
-                        "application-owned acquisition-cost capture must succeed before "
-                        "Profitability or successful completion. Obtain or refresh Sourcing "
-                        "when appropriate, then return a new structured judgment. Do not "
-                        "invent acquisition findings or missing costs."
-                    )
-                else:
-                    continuation = (
-                        "Deterministic finalization rejected the prior COMPLETED judgment: "
-                        f"{error}. A failed calculate_profitability invocation is not a "
-                        "substantive result and is not equivalent to a successful result "
-                        "whose status is INSUFFICIENT_INPUTS. "
-                        "Inspect its error, obtain or refresh the required evidence, and retry "
-                        "Profitability when possible, then return a new structured judgment. Do not declare "
-                        "VIABLE based only on gross spread."
-                    )
-                judgment = substantive_evaluation(
-                    self.candidate_workflow.active_result(), continuation
+                return CoordinationResult(
+                    False, response, self.candidate_workflow.active_result(), details,
                 )
-                try:
-                    final_result = self.candidate_workflow.apply_manager_judgment(
-                        judgment
-                    )
-                except SubstantiveCompletionPrerequisiteError as repeated_error:
-                    if isinstance(
-                        repeated_error, AcquisitionCapturePrerequisiteError
-                    ):
-                        response = (
-                            "Substantive completion was blocked because the latest "
-                            "Sourcing report does not have a successful acquisition-cost "
-                            "capture. The Evaluation remains active and all captured "
-                            "evidence was preserved."
-                        )
-                    else:
-                        response = (
-                            "Substantive completion was blocked because Profitability did "
-                            "not execute successfully. The Evaluation remains active and "
-                            "all captured attempts were preserved."
-                        )
-                    return CoordinationResult(
-                        False,
-                        response,
-                        self.candidate_workflow.active_result(),
-                    )
         except Exception as error:
             failure = self.candidate_workflow.fail_active_evaluation(
                 f"Substantive evaluation failed ({type(error).__name__})."
