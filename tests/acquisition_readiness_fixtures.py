@@ -78,6 +78,15 @@ def append_selling_capture(repository: CandidateRepository, evaluation_id: str):
     result = EconomicCostFindingsResult(
         findings=[
             EconomicCostFinding(
+                cost_id="seller_paid_outbound_shipping",
+                name="Seller-paid outbound shipping",
+                cost_type=CostType.FIXED_PER_BATCH,
+                value=None, estimated_low=None, estimated_high=None, currency="USD", basis=None,
+                modeled_value=None, modeled_value_basis=None, modeled_value_is_conservative=False,
+                unresolved_materiality="MATERIAL", source_references=[],
+                limitations=["Seller shipping responsibility/amount is unknown."], notes=None,
+            ),
+            EconomicCostFinding(
                 cost_id="marketplace_fee",
                 name="Marketplace fee",
                 cost_type=CostType.PERCENT_OF_UNIT_PRICE,

@@ -354,7 +354,7 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
                     basis=InputBasis.VERIFIED,
                 ),
                 cls.finding(
-                    "shipping",
+                    "seller_paid_outbound_shipping",
                     low="8",
                     high="12",
                     basis=InputBasis.ESTIMATED,
@@ -793,7 +793,7 @@ class ProfitabilityRequestAssemblyTests(unittest.TestCase):
         self.assertEqual(request.sale.selling_costs[1].cost_type, CostType.FIXED_PER_BATCH)
         self.assertEqual(request.sale.selling_costs[2].value, 12)
         self.assertEqual(request.sale.unknowns[0].materiality, UnknownMateriality.MATERIAL)
-        self.assertEqual(request.sensitivity_inputs[0].cost_id, "shipping")
+        self.assertEqual(request.sensitivity_inputs[0].cost_id, "seller_paid_outbound_shipping")
         self.assertEqual(
             _calculate_cost(request.sale.selling_costs[1], 1, Decimal("90")),
             Decimal("0.30"),

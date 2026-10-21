@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
 
@@ -477,17 +477,22 @@ class EconomicCostFinding(BaseModel):
         return self
 
 
+class OutboundShippingNonapplicability(BaseModel):
+    fulfillment_mode: Literal["LOCAL_IN_PERSON_NO_SHIPMENT"]
+    rationale: str
+    basis: InputBasis
+    source_references: list[SourceReference]
+
+
 class EconomicCostFindingsResult(BaseModel):
     findings: list[EconomicCostFinding]
+    outbound_shipping_nonapplicability: OutboundShippingNonapplicability | None = None
 
-    @field_validator("findings")
-    @classmethod
-    def validate_findings(
-        cls, findings: list[EconomicCostFinding]
-    ) -> list[EconomicCostFinding]:
-        if not findings:
+    @model_validator(mode="after")
+    def validate_findings(self) -> "EconomicCostFindingsResult":
+        if not self.findings and self.outbound_shipping_nonapplicability is None:
             raise ValueError("findings must not be empty")
-        return findings
+        return self
 
 
 class CostComponent(BaseModel):

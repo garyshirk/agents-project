@@ -16,6 +16,7 @@ from arbitrage.contracts import (
     EconomicCostFindingsResult,
     EvaluationArtifactType,
     ResaleResult,
+    OutboundShippingNonapplicability,
 )
 from arbitrage.selling_capture_state import SellingCaptureState
 
@@ -39,11 +40,14 @@ def selling_capture_tool_error(
 def record_captured_selling_cost_findings(
     context: RunContextWrapper[SellingCaptureContext],
     findings: list[EconomicCostFinding],
+    outbound_shipping_nonapplicability: OutboundShippingNonapplicability | None = None,
 ) -> str:
     """Record all defensible selling-side cost findings for this Resale result."""
     state = context.context.capture_state
     state.begin_action()
-    result = EconomicCostFindingsResult(findings=findings)
+    result = EconomicCostFindingsResult(
+        findings=findings, outbound_shipping_nonapplicability=outbound_shipping_nonapplicability,
+    )
     context_json = json.dumps(
         {
             "tool_call_id": getattr(context, "tool_call_id", None),
@@ -62,6 +66,16 @@ def record_captured_selling_cost_findings(
 selling_capture_agent = Agent(
     name="Selling Capture Agent",
     instructions=(
+        "Explicitly address seller-paid outbound shipping for one resale order. Use the cost_id "
+        "seller_paid_outbound_shipping with a supported fixed per-unit/per-order cost, supported "
+        "estimate, or documented ASSUMED model. If amount or responsibility is unknown, record that "
+        "finding with no amount/model and MATERIAL unresolved materiality, in the scenario currency. "
+        "Do not use generic shipping, acquisition freight, buyer-facing charges, packaging, fees, or "
+        "returns shipping as a substitute. Never infer seller expense or an offset from buyer-paid "
+        "shipping or unrelated comparables. Missing evidence does not imply zero. For supported "
+        "local in-person fulfillment without shipment, use outbound_shipping_nonapplicability with "
+        "fulfillment_mode LOCAL_IN_PERSON_NO_SHIPMENT, a rationale, observed/verified basis, and source "
+        "references; do not also emit an outbound-shipping cost. Otherwise leave that disposition null. "
         "Normalize selling-side economic evidence from the supplied active Candidate context, "
         "raw human inputs, and exact structured Resale result. Call record_selling_cost_findings "
         "exactly once with every defensible, relevant selling cost finding, then stop. This "

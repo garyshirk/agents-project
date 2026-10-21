@@ -27,6 +27,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.persistence import EconomicEvidenceSnapshot
 from arbitrage.identity_comparison import IdentityComparisonOutcome, compare_product_identity
+from arbitrage.shipping_coverage import validate_outbound_shipping
 from arbitrage.profitability_assembly import (
     EconomicFindingProjection,
     PURCHASE_PRICE_COST_ID,
@@ -147,6 +148,7 @@ class AssemblyFailureCode(str, Enum):
     QUANTITY = "QUANTITY"
     PROJECTION = "PROJECTION"
     INVALID_REQUEST = "INVALID_REQUEST"
+    SHIPPING_COVERAGE = "SHIPPING_COVERAGE"
 
 
 class AssemblyFailure(BaseModel):
@@ -228,6 +230,7 @@ class ProfitabilityRequestProvenance(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     evaluation_id: str
+    outbound_shipping_coverage: dict | None = None
     artifact_references: list[ArtifactProvenance]
     projection_policy_version: str
     scenario_policy: str
@@ -641,6 +644,17 @@ def assemble_profitability_request(
         )
         return _failure(code, "; ".join(identity_decision.reasons), identity_decision)
 
+    shipping = validate_outbound_shipping(selling_findings, acquisition_currency)
+    if not shipping.valid:
+        artifact = evidence.selling_cost_findings
+        return _failure(
+            AssemblyFailureCode.SHIPPING_COVERAGE,
+            f"{shipping.status.value}: seller-paid outbound shipping; Candidate {candidate.candidate_id}; "
+            f"Evaluation {evaluation.evaluation_id}; SELLING_COST_FINDINGS artifact {artifact.artifact_id} "
+            f"sequence {artifact.sequence_number}. {shipping.reason} "
+            "Revise capture with explicit coverage; research amount/responsibility if needed.",
+        )
+
     selected_prices, price_failure = _select_resale_prices(resale)
     if price_failure is not None:
         return price_failure
@@ -847,6 +861,12 @@ def assemble_profitability_request(
     )
     provenance = ProfitabilityRequestProvenance(
         evaluation_id=evaluation.evaluation_id,
+        outbound_shipping_coverage={
+            "status": shipping.status.value,
+            "reason": shipping.reason,
+            "nonapplicability": (selling_findings.outbound_shipping_nonapplicability.model_dump(mode="json")
+                                 if selling_findings.outbound_shipping_nonapplicability else None),
+        },
         artifact_references=[_artifact_reference(item) for item in artifacts],
         projection_policy_version=ASSEMBLY_POLICY_VERSION,
         scenario_policy=ONE_UNIT_POLICY,
