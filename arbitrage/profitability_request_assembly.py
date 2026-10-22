@@ -28,6 +28,7 @@ from arbitrage.contracts import (
 from arbitrage.persistence import EconomicEvidenceSnapshot
 from arbitrage.identity_comparison import IdentityComparisonOutcome, compare_product_identity
 from arbitrage.shipping_coverage import validate_outbound_shipping
+from arbitrage.fee_scope import validate_marketplace_fee_scope
 from arbitrage.profitability_assembly import (
     EconomicFindingProjection,
     PURCHASE_PRICE_COST_ID,
@@ -149,6 +150,8 @@ class AssemblyFailureCode(str, Enum):
     PROJECTION = "PROJECTION"
     INVALID_REQUEST = "INVALID_REQUEST"
     SHIPPING_COVERAGE = "SHIPPING_COVERAGE"
+    FEE_SCOPE_CONFLICT = "FEE_SCOPE_CONFLICT"
+    FEE_SCOPE_UNRESOLVED = "FEE_SCOPE_UNRESOLVED"
 
 
 class AssemblyFailure(BaseModel):
@@ -231,6 +234,7 @@ class ProfitabilityRequestProvenance(BaseModel):
 
     evaluation_id: str
     outbound_shipping_coverage: dict | None = None
+    marketplace_fee_scope: dict | None = None
     artifact_references: list[ArtifactProvenance]
     projection_policy_version: str
     scenario_policy: str
@@ -661,6 +665,17 @@ def assemble_profitability_request(
     assert selected_prices is not None
     resale_low, resale_high, resale_basis, selected_fields = selected_prices
 
+    fee_scope = validate_marketplace_fee_scope(selling_findings)
+    if not fee_scope.valid:
+        artifact = evidence.selling_cost_findings
+        return _failure(
+            AssemblyFailureCode(fee_scope.category),
+            f"Candidate {candidate.candidate_id}; Evaluation {evaluation.evaluation_id}; "
+            f"SELLING_COST_FINDINGS artifact {artifact.artifact_id} sequence {artifact.sequence_number}; "
+            f"cost IDs {list(fee_scope.cost_ids)}: {fee_scope.reason} "
+            "Provide corrected capture with documented fee inclusion or separate applicability; no automatic research retry.",
+        )
+
     projection = project_economic_findings(
         acquisition_findings,
         selling_findings,
@@ -861,6 +876,12 @@ def assemble_profitability_request(
     )
     provenance = ProfitabilityRequestProvenance(
         evaluation_id=evaluation.evaluation_id,
+        marketplace_fee_scope={
+            "validation": fee_scope.category,
+            "reason": fee_scope.reason,
+            "declaration": (selling_findings.marketplace_fee_scope.model_dump(mode="json")
+                            if selling_findings.marketplace_fee_scope else None),
+        },
         outbound_shipping_coverage={
             "status": shipping.status.value,
             "reason": shipping.reason,

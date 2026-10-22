@@ -17,6 +17,7 @@ from arbitrage.contracts import (
     EvaluationArtifactType,
     ResaleResult,
     OutboundShippingNonapplicability,
+    MarketplaceFeeScope,
 )
 from arbitrage.selling_capture_state import SellingCaptureState
 
@@ -41,12 +42,14 @@ def record_captured_selling_cost_findings(
     context: RunContextWrapper[SellingCaptureContext],
     findings: list[EconomicCostFinding],
     outbound_shipping_nonapplicability: OutboundShippingNonapplicability | None = None,
+    marketplace_fee_scope: MarketplaceFeeScope | None = None,
 ) -> str:
     """Record all defensible selling-side cost findings for this Resale result."""
     state = context.context.capture_state
     state.begin_action()
     result = EconomicCostFindingsResult(
         findings=findings, outbound_shipping_nonapplicability=outbound_shipping_nonapplicability,
+        marketplace_fee_scope=marketplace_fee_scope,
     )
     context_json = json.dumps(
         {
@@ -66,6 +69,19 @@ def record_captured_selling_cost_findings(
 selling_capture_agent = Agent(
     name="Selling Capture Agent",
     instructions=(
+        "Explicitly analyze marketplace/payment-processing fee scope. Use marketplace_transaction_fee "
+        "for the marketplace fee and payment_processing_charge only for an additional or MATERIAL-unknown "
+        "processing charge; link all percentage and fixed-per-order components in marketplace_fee_scope. "
+        "Declare INTEGRATED when processing is included, SEPARATELY_APPLICABLE only when evidence "
+        "establishes an additional charge, or UNRESOLVED when the relationship is unknown. Give a "
+        "rationale, marketplace_fee_cost_ids, processing_fee_cost_ids, and structured evidence with "
+        "source_kind FEE_SCHEDULE, ACCOUNT_TERMS, or TRANSACTION_FEE_STATEMENT, source reference, and "
+        "applicability_explanation. Product listings do not establish seller fee terms. Never assume "
+        "independence from distinct IDs, or apply one marketplace's fee model to another. An integrated "
+        "fee must not have a second additive processing amount. Unresolved processing applicability "
+        "must have an explicit MATERIAL unknown finding, no numeric processing amount or model, and "
+        "no invented zero. Preserve legitimately separate charges and unknown amounts; application "
+        "validation enforces overlap safety. "
         "Explicitly address seller-paid outbound shipping for one resale order. Use the cost_id "
         "seller_paid_outbound_shipping with a supported fixed per-unit/per-order cost, supported "
         "estimate, or documented ASSUMED model. If amount or responsibility is unknown, record that "

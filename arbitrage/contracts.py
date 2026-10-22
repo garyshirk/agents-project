@@ -506,9 +506,30 @@ class OutboundShippingNonapplicability(BaseModel):
     source_references: list[SourceReference]
 
 
+class FeeRelationship(str, Enum):
+    INTEGRATED = "INTEGRATED"
+    SEPARATELY_APPLICABLE = "SEPARATELY_APPLICABLE"
+    UNRESOLVED = "UNRESOLVED"
+
+
+class FeeScopeEvidence(BaseModel):
+    source_kind: Literal["FEE_SCHEDULE", "ACCOUNT_TERMS", "TRANSACTION_FEE_STATEMENT", "PRODUCT_LISTING"]
+    reference: SourceReference
+    applicability_explanation: str
+
+
+class MarketplaceFeeScope(BaseModel):
+    relationship: FeeRelationship
+    marketplace_fee_cost_ids: list[str]
+    processing_fee_cost_ids: list[str]
+    rationale: str
+    evidence: list[FeeScopeEvidence]
+
+
 class EconomicCostFindingsResult(BaseModel):
     findings: list[EconomicCostFinding]
     outbound_shipping_nonapplicability: OutboundShippingNonapplicability | None = None
+    marketplace_fee_scope: MarketplaceFeeScope | None = None
 
     @model_validator(mode="after")
     def validate_findings(self) -> "EconomicCostFindingsResult":
