@@ -22,7 +22,7 @@ from arbitrage.lead_routing_completion import LeadRoutingDiagnostics, finish_lea
 from arbitrage.lead_routing_state import LeadRoutingError
 from arbitrage.persistence import CandidateRepository
 from arbitrage.specialists.sourcing import sourcing_agent
-from tests.test_lead_decision_contract import candidate_request
+from tests.test_lead_decision_contract import candidate_request, intake_assessment
 
 
 def text(value):
@@ -146,7 +146,9 @@ class LeadRoutingReliabilityTests(unittest.TestCase):
                 self.assertEqual(hooks.events[1]["outcome"], "routing_recorded")
 
     def test_valid_candidate_ready_records_without_persisting_until_coordinator(self):
+        self.context.lead_routing.begin("Offline test")
         arguments = {"candidate_request": candidate_request().model_dump(mode="json"),
+                     "intake_assessment": intake_assessment().model_dump(mode="json"),
                      "reasoning": "Sufficient identity", "unresolved_uncertainties": []}
         lead, model = self.lead([[call("route_candidate_ready", json.dumps(arguments))]])
         self.run_lead(lead)

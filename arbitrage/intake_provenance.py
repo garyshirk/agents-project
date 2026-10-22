@@ -3,22 +3,34 @@
 from arbitrage.contracts import (
     CandidateIntake, CandidateIntakeSource, IdentityConfidence, IntakeChannel,
     IntakeProvenance, StartCandidateEvaluationRequest,
+    LeadIntakeAssessment, CandidateSourceKind,
 )
 
 
-def bind_human_intake(request: StartCandidateEvaluationRequest, human_input: str):
+def validate_intake_assessment(request, human_input, assessment):
+    if assessment is None or not isinstance(human_input, str):
+        raise ValueError("New Candidate requires an explicit intake assessment and current human input")
+    assessment = LeadIntakeAssessment.model_validate(assessment.model_dump())
+    if any(excerpt not in human_input for excerpt in assessment.supporting_user_excerpts):
+        raise ValueError("Intake assessment excerpts must occur literally in the current human message")
+    physical = request.acquisition_source.source_kind == CandidateSourceKind.PHYSICAL_STORE
+    if ((assessment.physical_acquisition_proposed is True and not physical)
+            or (physical and assessment.physical_acquisition_proposed is not True)):
+        raise ValueError("Physical acquisition declaration must agree with PHYSICAL_STORE; unknown location does not imply OTHER")
+    return assessment
+
+
+def bind_human_intake(request: StartCandidateEvaluationRequest, human_input: str, assessment=None):
     """Copy an agent proposal; never infer observation from channel or field presence."""
+    assessment = validate_intake_assessment(request, human_input, assessment)
     result = request.model_copy(deep=True)
     intake = result.intake_snapshot
-    proposed = intake.provenance if intake else None
-    excerpts = proposed.supporting_user_excerpts if proposed else []
-    # Validate literal support, not linguistic meaning. Status remains an agent-attributed
-    # interpretation of explicit statements, never independent verification.
-    supported = bool(excerpts) and all(excerpt.strip() and excerpt in human_input for excerpt in excerpts)
     provenance = IntakeProvenance(
         channel=IntakeChannel.HUMAN_SUBMISSION,
-        opportunity_status=proposed.opportunity_status if proposed and supported else None,
-        supporting_user_excerpts=list(excerpts) if supported else [],
+        opportunity_status=assessment.status,
+        supporting_user_excerpts=list(assessment.supporting_user_excerpts),
+        unspecified_reason=assessment.unspecified_reason,
+        physical_acquisition_proposed=assessment.physical_acquisition_proposed,
     )
     if intake is None:
         intake = CandidateIntake(

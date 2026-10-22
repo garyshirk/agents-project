@@ -6,7 +6,9 @@ from arbitrage.contracts import (
     LeadDecision,
     LeadDisposition,
     StartCandidateEvaluationRequest,
+    LeadIntakeAssessment,
 )
+from arbitrage.intake_provenance import validate_intake_assessment
 
 
 ROUTING_RECORDED = (
@@ -18,10 +20,14 @@ ROUTING_RECORDED = (
 def route_candidate_ready(
     context: RunContextWrapper[ApplicationContext],
     candidate_request: StartCandidateEvaluationRequest,
+    intake_assessment: LeadIntakeAssessment,
     reasoning: str,
     unresolved_uncertainties: list[str],
 ) -> str:
     """Route a sufficiently specific new Lead into substantive Candidate evaluation."""
+    assessment = validate_intake_assessment(
+        candidate_request, context.context.lead_routing.human_input, intake_assessment,
+    )
     relation = (
         CandidateRelation.CLEARLY_NEW
         if context.context.candidate_workflow.active.is_active
@@ -34,6 +40,7 @@ def route_candidate_ready(
             reasoning=reasoning,
             continue_substantive_evaluation=True,
             candidate_request=candidate_request,
+            intake_assessment=assessment,
             clarification_question=None,
             user_message=None,
             unresolved_uncertainties=unresolved_uncertainties,

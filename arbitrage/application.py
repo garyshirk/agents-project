@@ -76,7 +76,7 @@ def main() -> None:
                 break
 
             print("[debug] Lead Qualifier called")
-            context.lead_routing.begin()
+            context.lead_routing.begin(prompt)
             diagnostics = LeadRoutingDiagnostics()
             _qualification = None
             runner_returned = False

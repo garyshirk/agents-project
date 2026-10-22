@@ -19,7 +19,7 @@ from arbitrage.contracts import (
 from arbitrage.coordinator import ArbitrageCoordinator
 from arbitrage.persistence import CandidateRepository
 from tests.acquisition_readiness_fixtures import append_acquisition_readiness
-from tests.test_lead_decision_contract import candidate_request
+from tests.test_lead_decision_contract import candidate_request, intake_assessment
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -40,6 +40,7 @@ class CoordinatorTests(unittest.TestCase):
             "reasoning": "Deterministic test decision.",
             "continue_substantive_evaluation": True,
             "candidate_request": candidate_request(),
+            "intake_assessment": intake_assessment(),
             "clarification_question": None,
             "user_message": None,
             "unresolved_uncertainties": [],

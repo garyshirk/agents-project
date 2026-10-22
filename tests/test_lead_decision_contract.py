@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from agents.agent_output import AgentOutputSchema
 
 from arbitrage.contracts import (
+    LeadIntakeAssessment,
     CandidateDestination,
     CandidateIntakeSource,
     CandidateRelation,
@@ -15,6 +16,11 @@ from arbitrage.contracts import (
     StartCandidateEvaluationRequest,
     EvaluationTrigger,
 )
+
+
+def intake_assessment() -> LeadIntakeAssessment:
+    return LeadIntakeAssessment(status="UNSPECIFIED", supporting_user_excerpts=[],
+        unspecified_reason="Fixture contains no encounter evidence.", physical_acquisition_proposed=True)
 
 
 def candidate_request() -> StartCandidateEvaluationRequest:

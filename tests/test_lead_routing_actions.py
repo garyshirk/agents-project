@@ -37,7 +37,7 @@ from arbitrage.orchestration import (
 from arbitrage.persistence import CandidateRepository
 from arbitrage.specialists.resale import resale_agent
 from arbitrage.specialists.sourcing import sourcing_agent
-from tests.test_lead_decision_contract import candidate_request
+from tests.test_lead_decision_contract import candidate_request, intake_assessment
 
 
 class LeadRoutingActionTests(unittest.TestCase):
@@ -98,7 +98,8 @@ class LeadRoutingActionTests(unittest.TestCase):
     def test_candidate_ready_action_constructs_internal_decision(self):
         arguments = self.common_arguments()
         arguments["candidate_request"] = candidate_request().model_dump(mode="json")
-        self.context.lead_routing.begin()
+        arguments["intake_assessment"] = intake_assessment().model_dump(mode="json")
+        self.context.lead_routing.begin("Fixture input")
         self.invoke(route_candidate_ready, arguments)
         decision = self.context.lead_routing.complete()
         self.assertEqual(decision.disposition, LeadDisposition.CANDIDATE_READY)
@@ -176,7 +177,7 @@ class LeadRoutingActionTests(unittest.TestCase):
     def test_action_schemas_are_semantic_and_smaller_at_the_top_level(self):
         self.assertEqual(
             set(route_candidate_ready.params_json_schema["properties"]),
-            {"candidate_request", "reasoning", "unresolved_uncertainties"},
+            {"candidate_request", "intake_assessment", "reasoning", "unresolved_uncertainties"},
         )
         self.assertEqual(
             set(route_existing_candidate.params_json_schema["properties"]),

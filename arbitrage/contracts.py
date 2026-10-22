@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, field_validator, model_validator
 
 
 DecimalString = Annotated[
@@ -203,6 +203,7 @@ class IntakeChannel(str, Enum):
 
 
 class OpportunityEvidenceStatus(str, Enum):
+    UNSPECIFIED = "UNSPECIFIED"
     HYPOTHETICAL = "HYPOTHETICAL"
     HUMAN_REPORTED_IN_STORE = "HUMAN_REPORTED_IN_STORE"
     HUMAN_REPORTED_ONLINE = "HUMAN_REPORTED_ONLINE"
@@ -212,6 +213,8 @@ class IntakeProvenance(BaseModel):
     channel: IntakeChannel | None = None
     opportunity_status: OpportunityEvidenceStatus | None = None
     supporting_user_excerpts: list[str] = Field(default_factory=list)
+    unspecified_reason: str | None = None
+    physical_acquisition_proposed: bool | None = None
 
 
 class CandidateIntake(BaseModel):
@@ -1095,6 +1098,25 @@ class CandidateRelation(str, Enum):
     AMBIGUOUS = "AMBIGUOUS"
 
 
+class LeadIntakeAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: OpportunityEvidenceStatus
+    supporting_user_excerpts: list[str]
+    unspecified_reason: str | None
+    physical_acquisition_proposed: bool | None
+
+    @model_validator(mode="after")
+    def validate_assessment(self) -> "LeadIntakeAssessment":
+        if self.status == OpportunityEvidenceStatus.UNSPECIFIED:
+            if not (self.unspecified_reason or "").strip() or self.supporting_user_excerpts:
+                raise ValueError("UNSPECIFIED requires a nonblank reason and no claimed supporting excerpts")
+        elif (not self.supporting_user_excerpts
+              or any(not excerpt.strip() for excerpt in self.supporting_user_excerpts)
+              or self.unspecified_reason is not None):
+            raise ValueError("Claimed status requires nonblank supporting excerpts and null unspecified_reason")
+        return self
+
+
 class LeadDecision(BaseModel):
     disposition: LeadDisposition
     relation_to_active: CandidateRelation
@@ -1104,6 +1126,7 @@ class LeadDecision(BaseModel):
     clarification_question: str | None
     user_message: str | None
     unresolved_uncertainties: list[str]
+    intake_assessment: LeadIntakeAssessment | None = None
 
     @model_validator(mode="after")
     def validate_decision(self) -> "LeadDecision":

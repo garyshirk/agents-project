@@ -10,9 +10,11 @@ class LeadRoutingError(RuntimeError):
 @dataclass
 class LeadRoutingState:
     decisions: list[LeadDecision] = field(default_factory=list)
+    human_input: str | None = None
 
-    def begin(self) -> None:
+    def begin(self, human_input: str | None = None) -> None:
         self.decisions.clear()
+        self.human_input = human_input
 
     def select(self, decision: LeadDecision) -> None:
         self.decisions.append(decision)

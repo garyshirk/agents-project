@@ -89,7 +89,7 @@ class ArbitrageCoordinator:
         print("[debug] Candidate creation started")
         try:
             workflow_result = self.candidate_workflow.start_candidate_evaluation(
-                bind_human_intake(decision.candidate_request, human_input)
+                bind_human_intake(decision.candidate_request, human_input, decision.intake_assessment)
             )
         except Exception as error:
             return CoordinationResult(
