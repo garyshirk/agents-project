@@ -989,7 +989,35 @@ class WorkflowEvaluationAction(str, Enum):
     RESUME = "RESUME"
 
 
+class IdentityResolutionStatus(str, Enum):
+    PROPOSED = "PROPOSED"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+
+
+class IdentityResolution(BaseModel):
+    """An append-only event; artifact ID, sequence, and timestamp come from persistence."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    candidate_id: str
+    evaluation_id: str
+    attribute_path: Literal["material_variant.colorway"]
+    candidate_value: str
+    resale_value: str
+    candidate_identity_sha256: str
+    resale_identity_sha256: str
+    resale_artifact_id: int
+    resale_sequence: int
+    supporting_evidence: list[SourceReference]
+    explanation: str
+    proposed_by: Literal["APPLICATION_FROM_RESALE_EVIDENCE"]
+    status: IdentityResolutionStatus
+    proposal_artifact_id: int | None
+    human_command: str | None
+
+
 class EvaluationArtifactType(str, Enum):
+    IDENTITY_RESOLUTION = "IDENTITY_RESOLUTION"
     HUMAN_INPUT = "HUMAN_INPUT"
     SOURCING = "SOURCING"
     SOURCING_REPORT = "SOURCING_REPORT"

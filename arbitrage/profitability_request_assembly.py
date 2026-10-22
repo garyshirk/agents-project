@@ -27,6 +27,7 @@ from arbitrage.contracts import (
 )
 from arbitrage.persistence import EconomicEvidenceSnapshot
 from arbitrage.identity_comparison import IdentityComparisonOutcome, compare_product_identity
+from arbitrage.identity_resolution import PATH, confirmed_colorway_resolution, resolution_status
 from arbitrage.shipping_coverage import validate_outbound_shipping
 from arbitrage.fee_scope import validate_marketplace_fee_scope
 from arbitrage.profitability_assembly import (
@@ -57,6 +58,8 @@ class IdentityAcceptanceDecision(BaseModel):
     blocking_fields: list[str]
     rule_ids: list[str]
     reasons: list[str]
+    human_confirmed_fields: list[str] = Field(default_factory=list)
+    resolution_artifact_ids: list[int] = Field(default_factory=list)
 
 
 def evaluate_identity_acceptance(
@@ -628,16 +631,41 @@ def assemble_profitability_request(
         )
 
     identity_decision = evaluate_identity_acceptance(candidate.product_identity, resale)
+    resolutions = confirmed_colorway_resolution(candidate, evaluation.evaluation_id, evidence)
+    if resolutions and PATH in identity_decision.conflicting_fields:
+        remaining = [field for field in identity_decision.blocking_fields if field != PATH]
+        identity_decision = identity_decision.model_copy(update={
+            "blocking_fields": remaining,
+            "accepted": not remaining,
+            "allowed_unresolved_fields": list(identity_decision.unresolved_fields) if not remaining else [],
+            "human_confirmed_fields": [PATH],
+            "resolution_artifact_ids": [item.artifact_id for item in resolutions],
+            "rule_ids": [*identity_decision.rule_ids, "HUMAN_CONFIRMED_COLORWAY"],
+            "reasons": [*identity_decision.reasons,
+                        "Human confirmed only this exact colorway equivalence; original comparison and identities are preserved."],
+        })
     if "condition" in identity_decision.conflicting_fields:
         return _failure(
             AssemblyFailureCode.CONDITION_CONFLICT,
             "Candidate and Resale researched conditions conflict",
             identity_decision,
         )
-    if identity_decision.conflicting_fields:
+    remaining_conflicts = [field for field in identity_decision.conflicting_fields
+                           if field not in identity_decision.human_confirmed_fields]
+    if remaining_conflicts:
+        clarification = (
+            "For an explicit human colorway clarification, use /identity propose colorway in the terminal. "
+            if PATH in remaining_conflicts else
+            "Other conflicting attributes require additional evidence; colorway confirmation cannot resolve them. "
+        )
         return _failure(
             AssemblyFailureCode.IDENTITY_CONFLICT,
-            f"Candidate and Resale identities materially conflict: {identity_decision.conflicting_fields}",
+            f"Candidate and Resale identities materially conflict: {remaining_conflicts}. "
+            f"Candidate colorway: {candidate.product_identity.material_variant.colorway if candidate.product_identity.material_variant else None!r}; "
+            f"Resale colorway: {resale.researched_identity.material_variant.colorway if resale.researched_identity.material_variant else None!r}; "
+            f"Resale artifact {evidence.resale.artifact_id}. "
+            f"{resolution_status(evidence)} "
+            f"{clarification}No resolution is inferred from research or agent assertions.",
             identity_decision,
         )
     if not identity_decision.accepted:
@@ -888,7 +916,7 @@ def assemble_profitability_request(
             "nonapplicability": (selling_findings.outbound_shipping_nonapplicability.model_dump(mode="json")
                                  if selling_findings.outbound_shipping_nonapplicability else None),
         },
-        artifact_references=[_artifact_reference(item) for item in artifacts],
+        artifact_references=[_artifact_reference(item) for item in (*artifacts, *resolutions)],
         projection_policy_version=ASSEMBLY_POLICY_VERSION,
         scenario_policy=ONE_UNIT_POLICY,
         resale_price_selection=price_selection,

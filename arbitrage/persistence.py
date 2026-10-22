@@ -29,10 +29,14 @@ from arbitrage.contracts import (
     ResaleResult,
     SourcingResult,
     SourcingTextReport,
+    IdentityResolution,
 )
 
 
 SCHEMA_VERSION = 2
+# In-process write capability, never supplied by an agent tool. This is not
+# authentication against a user with arbitrary Python/SQLite access.
+_IDENTITY_RESOLUTION_AUTHORITY = object()
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "arbitrage.db"
 TERMINAL_EVALUATION_STATUSES = {
     EvaluationStatus.COMPLETED,
@@ -94,6 +98,7 @@ class EconomicEvidenceSnapshot:
     acquisition_cost_findings: EvaluationArtifact | None
     resale: EvaluationArtifact | None
     selling_cost_findings: EvaluationArtifact | None
+    identity_resolutions: tuple[EvaluationArtifact, ...] = ()
 
     @property
     def acquisition_ready(self) -> bool:
@@ -639,7 +644,14 @@ class CandidateRepository:
         artifact_type: EvaluationArtifactType,
         payload_json: str,
         context_json: str | None = None,
+        _identity_authority: object | None = None,
     ) -> EvaluationArtifact:
+        if artifact_type == EvaluationArtifactType.IDENTITY_RESOLUTION:
+            if _identity_authority is not _IDENTITY_RESOLUTION_AUTHORITY:
+                raise ValueError("Identity resolution writes require the trusted human-input handler")
+            resolution = IdentityResolution.model_validate_json(payload_json)
+            if resolution.evaluation_id != evaluation_id:
+                raise ValueError("Identity resolution Evaluation mismatch")
         try:
             json.loads(payload_json)
             if context_json is not None:
@@ -762,6 +774,7 @@ class CandidateRepository:
             EvaluationArtifactType.ACQUISITION_COST_FINDINGS,
             EvaluationArtifactType.RESALE,
             EvaluationArtifactType.SELLING_COST_FINDINGS,
+            EvaluationArtifactType.IDENTITY_RESOLUTION,
         )
         if connection.execute(
             "SELECT 1 FROM candidate_evaluations WHERE evaluation_id = ?",
@@ -792,6 +805,8 @@ class CandidateRepository:
             selling_cost_findings=latest.get(
                 EvaluationArtifactType.SELLING_COST_FINDINGS
             ),
+            identity_resolutions=tuple(_artifact_from_row(row) for row in rows
+                if row["artifact_type"] == EvaluationArtifactType.IDENTITY_RESOLUTION.value),
         )
 
     def require_acquisition_capture(self, evaluation_id: str) -> None:

@@ -14,6 +14,7 @@ from arbitrage.coordinator import ArbitrageCoordinator
 from arbitrage.evaluation_capture import EvaluationCaptureHooks
 from arbitrage.lead_routing_completion import LeadRoutingDiagnostics
 from arbitrage.persistence import CandidateRepository
+from arbitrage.identity_resolution import handle_identity_command
 
 
 DEFAULT_SESSION_ID = "default_conversation"
@@ -74,6 +75,11 @@ def main() -> None:
             prompt = input("You: ")
             if prompt.strip().lower() in {"exit", "quit"}:
                 break
+
+            identity_response = handle_identity_command(context.candidate_workflow, prompt)
+            if identity_response is not None:
+                print(f"Assistant: {identity_response}")
+                continue
 
             print("[debug] Lead Qualifier called")
             context.lead_routing.begin(prompt)
