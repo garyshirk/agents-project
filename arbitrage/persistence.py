@@ -23,6 +23,7 @@ from arbitrage.contracts import (
     EvaluationArtifactType,
     EvaluationStatus,
     EvaluationTrigger,
+    EvaluationSelectionEvent,
     ProductIdentity,
     ProfitabilityResult,
     ProfitabilityToolResult,
@@ -37,6 +38,7 @@ SCHEMA_VERSION = 2
 # In-process write capability, never supplied by an agent tool. This is not
 # authentication against a user with arbitrary Python/SQLite access.
 _IDENTITY_RESOLUTION_AUTHORITY = object()
+_EVALUATION_SELECTION_AUTHORITY = object()
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "arbitrage.db"
 TERMINAL_EVALUATION_STATUSES = {
     EvaluationStatus.COMPLETED,
@@ -55,6 +57,12 @@ class UnsupportedSchemaVersionError(PersistenceError):
 
 class RecordNotFoundError(PersistenceError):
     pass
+
+
+class EvaluationSelectionRefused(PersistenceError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class InvalidStateTransitionError(PersistenceError):
@@ -637,6 +645,53 @@ class CandidateRepository:
             ).fetchall()
         return [_evaluation_from_row(row) for row in rows]
 
+    @contextmanager
+    def _evaluation_selection_transaction(self, evaluation_id: str, *, _authority):
+        """Validate under a write lock; rollback audit if activation/commit fails."""
+        if _authority is not _EVALUATION_SELECTION_AUTHORITY:
+            raise EvaluationSelectionRefused("UNAUTHORIZED", "Selection requires direct human terminal input")
+        with _connection(self.database_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM candidate_evaluations WHERE evaluation_id = ?", (evaluation_id,)
+            ).fetchone()
+            if row is None:
+                raise EvaluationSelectionRefused("EVALUATION_NOT_FOUND", "The exact Evaluation does not exist")
+            evaluation = _evaluation_from_row(row)
+            row = connection.execute(
+                "SELECT * FROM candidates WHERE candidate_id = ?", (evaluation.candidate_id,)
+            ).fetchone()
+            if row is None:
+                raise EvaluationSelectionRefused("CANDIDATE_NOT_FOUND", "The Evaluation's Candidate does not exist")
+            candidate = _candidate_from_row(row)
+            if candidate.candidate_id != evaluation.candidate_id:
+                raise EvaluationSelectionRefused("RECORD_MISMATCH", "Candidate and Evaluation do not match")
+            if evaluation.status not in {EvaluationStatus.IN_PROGRESS, EvaluationStatus.WAITING_FOR_INPUT}:
+                raise EvaluationSelectionRefused("INELIGIBLE_EVALUATION", "Only an unfinished Evaluation may be selected")
+            if candidate.lifecycle_status != CandidateLifecycleStatus.INVESTIGATING:
+                raise EvaluationSelectionRefused("INELIGIBLE_CANDIDATE", "Candidate must be INVESTIGATING")
+            yield connection, candidate, evaluation
+
+    @staticmethod
+    def _append_selection_event(connection, event: EvaluationSelectionEvent, *, _authority) -> EvaluationArtifact:
+        if _authority is not _EVALUATION_SELECTION_AUTHORITY:
+            raise EvaluationSelectionRefused("UNAUTHORIZED", "Selection requires direct human terminal input")
+        sequence = connection.execute(
+            "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM evaluation_artifacts WHERE evaluation_id = ?",
+            (event.evaluation_id,),
+        ).fetchone()[0]
+        cursor = connection.execute(
+            """INSERT INTO evaluation_artifacts(
+                evaluation_id, sequence_number, artifact_type, payload_json, context_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (event.evaluation_id, sequence, EvaluationArtifactType.EVALUATION_SELECTION.value,
+             event.model_dump_json(), None, _timestamp(_utc_now())),
+        )
+        row = connection.execute(
+            "SELECT * FROM evaluation_artifacts WHERE artifact_id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return _artifact_from_row(row)
+
     def append_evaluation_artifact(
         self,
         evaluation_id: str,
@@ -646,6 +701,8 @@ class CandidateRepository:
         context_json: str | None = None,
         _identity_authority: object | None = None,
     ) -> EvaluationArtifact:
+        if artifact_type == EvaluationArtifactType.EVALUATION_SELECTION:
+            raise ValueError("Selection events require the trusted human selection transaction")
         if artifact_type == EvaluationArtifactType.IDENTITY_RESOLUTION:
             if _identity_authority is not _IDENTITY_RESOLUTION_AUTHORITY:
                 raise ValueError("Identity resolution writes require the trusted human-input handler")

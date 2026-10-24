@@ -15,6 +15,7 @@ from arbitrage.evaluation_capture import EvaluationCaptureHooks
 from arbitrage.lead_routing_completion import LeadRoutingDiagnostics
 from arbitrage.persistence import CandidateRepository
 from arbitrage.identity_resolution import handle_identity_command
+from arbitrage.evaluation_selection import handle_evaluation_command
 
 
 DEFAULT_SESSION_ID = "default_conversation"
@@ -75,6 +76,13 @@ def main() -> None:
             prompt = input("You: ")
             if prompt.strip().lower() in {"exit", "quit"}:
                 break
+
+            selection = handle_evaluation_command(
+                context.candidate_workflow, prompt, session_id=getattr(session, "session_id", None),
+            )
+            if selection is not None:
+                print(f"Assistant: {selection.model_dump_json()}")
+                continue
 
             identity_response = handle_identity_command(context.candidate_workflow, prompt)
             if identity_response is not None:

@@ -1,5 +1,8 @@
 import json
+import sqlite3
+from threading import RLock
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from agents import RunContextWrapper, function_tool
 
@@ -12,6 +15,8 @@ from arbitrage.contracts import (
     EvaluationArtifactType,
     EvaluationStatus,
     EvaluationTrigger,
+    EvaluationSelectionEvent,
+    EvaluationSelectionResult,
     FinishCandidateEvaluationRequest,
     ManagerEvaluationJudgment,
     ManagerEvaluationOutcome,
@@ -27,6 +32,9 @@ from arbitrage.persistence import (
     CandidateRepository,
     EconomicEvidenceSnapshot,
     RecordNotFoundError,
+    EvaluationSelectionRefused,
+    PersistenceDataError,
+    _EVALUATION_SELECTION_AUTHORITY,
 )
 from arbitrage.lead_routing_state import LeadRoutingState
 
@@ -53,6 +61,7 @@ class CandidateWorkflow:
     def __init__(self, repository: CandidateRepository) -> None:
         self.repository = repository
         self.active = ActiveInvestigation()
+        self._selection_lock = RLock()
 
     def _active_records(self):
         if not self.active.is_active:
@@ -70,6 +79,92 @@ class CandidateWorkflow:
     def active_result(self) -> CandidateWorkflowResult:
         candidate, evaluation = self._active_records()
         return self._result(candidate, evaluation, active=True)
+
+    def _activate_selection(self, candidate_id: str, evaluation_id: str) -> None:
+        # Replace both IDs together; no partially assigned ActiveInvestigation.
+        self.active = ActiveInvestigation(candidate_id, evaluation_id)
+
+    def select_existing_evaluation(
+        self, evaluation_id: str, *, human_command: str, session_id: str | None = None,
+        _authority: object | None = None,
+    ) -> EvaluationSelectionResult:
+        """Serialize reattachment in this workflow only; not a multi-process lease."""
+        with self._selection_lock:
+            return self._select_existing_evaluation(
+                evaluation_id, human_command=human_command, session_id=session_id,
+                _authority=_authority,
+            )
+
+    def _select_existing_evaluation(
+        self, evaluation_id: str, *, human_command: str, session_id: str | None,
+        _authority: object | None,
+    ) -> EvaluationSelectionResult:
+        """Human-only reattachment, not RESUME or execution of any evaluation work.
+
+        Activation precedes commit, so ordinary failures restore memory and roll
+        back the audit. A crash can lose memory after commit: the durable event
+        is audit history only; a new process still needs explicit human selection.
+        """
+        previous = ActiveInvestigation(self.active.candidate_id, self.active.evaluation_id)
+        activating = False
+        try:
+            if _authority is not _EVALUATION_SELECTION_AUTHORITY:
+                raise EvaluationSelectionRefused("UNAUTHORIZED", "Selection requires direct human terminal input")
+            try:
+                valid_id = str(UUID(evaluation_id)) == evaluation_id
+            except (ValueError, TypeError, AttributeError):
+                valid_id = False
+            if not valid_id:
+                raise EvaluationSelectionRefused("INVALID_EVALUATION_ID", "Evaluation ID must be an exact canonical UUID")
+            if human_command != f"/evaluation select {evaluation_id}":
+                raise EvaluationSelectionRefused("INVALID_COMMAND", "Use exactly /evaluation select <evaluation-id>")
+            if (previous.candidate_id is None) != (previous.evaluation_id is None):
+                raise EvaluationSelectionRefused("INVALID_ACTIVE_STATE", "Existing active IDs are incomplete; selection was not changed")
+            with self.repository._evaluation_selection_transaction(
+                evaluation_id, _authority=_authority,
+            ) as (connection, candidate, evaluation):
+                if previous.is_active:
+                    if (previous.candidate_id, previous.evaluation_id) != (candidate.candidate_id, evaluation.evaluation_id):
+                        raise EvaluationSelectionRefused("ACTIVE_CONFLICT", "A different investigation is already active")
+                    result = EvaluationSelectionResult(
+                        success=True, evaluation_id=evaluation.evaluation_id,
+                        candidate_id=candidate.candidate_id, evaluation_status=evaluation.status,
+                        already_active=True, message="This Evaluation is already active; no new audit event or work was started.",
+                    )
+                else:
+                    event = EvaluationSelectionEvent(
+                        evaluation_id=evaluation.evaluation_id, candidate_id=candidate.candidate_id,
+                        human_command=human_command, session_id=session_id,
+                    )
+                    artifact = self.repository._append_selection_event(connection, event, _authority=_authority)
+                    result = EvaluationSelectionResult(
+                        success=True, evaluation_id=evaluation.evaluation_id,
+                        candidate_id=candidate.candidate_id, evaluation_status=evaluation.status,
+                        artifact_id=artifact.artifact_id,
+                        message="Evaluation selected only. No status change, agents, research, captures, or calculation started.",
+                    )
+                    activating = True
+                    self._activate_selection(candidate.candidate_id, evaluation.evaluation_id)
+                    if (self.active.candidate_id, self.active.evaluation_id) != (candidate.candidate_id, evaluation.evaluation_id):
+                        raise RuntimeError("Activation did not establish the validated selection")
+            return result
+        except BaseException as error:
+            self.active = previous
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, EvaluationSelectionRefused):
+                code, message = error.code, str(error)
+            elif not activating and isinstance(error, (PersistenceDataError, ValueError, TypeError)):
+                code, message = "INVALID_PERSISTED_DATA", "Persisted records are invalid; selection was refused without repair"
+            elif isinstance(error, sqlite3.Error):
+                code, message = "STORAGE_FAILURE", "Selection storage failed; no active selection was retained"
+            else:
+                code = "ACTIVATION_FAILURE" if activating else "SELECTION_FAILURE"
+                message = "Selection failed; no active selection was retained"
+            return EvaluationSelectionResult(
+                success=False, evaluation_id=evaluation_id if isinstance(evaluation_id, str) else None,
+                error_code=code, message=message,
+            )
 
     def qualification_context(self) -> str:
         if not self.active.is_active:

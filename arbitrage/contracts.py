@@ -989,6 +989,36 @@ class WorkflowEvaluationAction(str, Enum):
     RESUME = "RESUME"
 
 
+class EvaluationSelectionEvent(BaseModel):
+    """Local human authorization; the enclosing artifact supplies its timestamp."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    evaluation_id: str
+    candidate_id: str
+    human_command: str
+    action: Literal["EVALUATION_SELECTED"] = "EVALUATION_SELECTED"
+    source: Literal["HUMAN_TERMINAL"] = "HUMAN_TERMINAL"
+    session_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_command(self) -> "EvaluationSelectionEvent":
+        if self.human_command != f"/evaluation select {self.evaluation_id}":
+            raise ValueError("Selection command must identify the exact Evaluation")
+        return self
+
+
+class EvaluationSelectionResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    success: bool
+    evaluation_id: str | None = None
+    candidate_id: str | None = None
+    evaluation_status: EvaluationStatus | None = None
+    artifact_id: int | None = None
+    already_active: bool = False
+    error_code: str | None = None
+    message: str
+
+
 class IdentityResolutionStatus(str, Enum):
     PROPOSED = "PROPOSED"
     CONFIRMED = "CONFIRMED"
@@ -1017,6 +1047,7 @@ class IdentityResolution(BaseModel):
 
 
 class EvaluationArtifactType(str, Enum):
+    EVALUATION_SELECTION = "EVALUATION_SELECTION"
     IDENTITY_RESOLUTION = "IDENTITY_RESOLUTION"
     HUMAN_INPUT = "HUMAN_INPUT"
     SOURCING = "SOURCING"
