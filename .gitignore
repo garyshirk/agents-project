@@ -7,3 +7,6 @@ sessions.db-wal
 arbitrage.db
 arbitrage.db-shm
 arbitrage.db-wal
+arbitrage.db-journal
+sessions.db-journal
+/dev_data/

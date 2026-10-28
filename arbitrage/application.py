@@ -1,6 +1,5 @@
 import asyncio
 import os
-from pathlib import Path
 
 from agents import RunConfig, Runner, SQLiteSession
 from dotenv import load_dotenv
@@ -17,11 +16,12 @@ from arbitrage.persistence import CandidateRepository
 from arbitrage.identity_resolution import handle_identity_command
 from arbitrage.evaluation_selection import handle_evaluation_command
 from arbitrage.evaluation_context import handle_evaluation_context_command, render_evaluation_context
+from arbitrage.database_config import DEFAULT_SESSION_DATABASE, get_database_paths
 
 
 DEFAULT_SESSION_ID = "default_conversation"
 SESSION_ID_ENVIRONMENT_VARIABLE = "ARBITRAGE_SESSION_ID"
-SESSIONS_DATABASE_PATH = Path(__file__).resolve().parent.parent / "sessions.db"
+SESSIONS_DATABASE_PATH = DEFAULT_SESSION_DATABASE
 
 
 def get_session_id() -> str:
@@ -55,6 +55,7 @@ def record_application_response(
 
 def main() -> None:
     load_dotenv()
+    database_paths = get_database_paths()
 
     from arbitrage.orchestration import agent, lead_qualifier
 
@@ -65,10 +66,10 @@ def main() -> None:
 
     session = SQLiteSession(
         get_session_id(),
-        SESSIONS_DATABASE_PATH,
+        database_paths.sessions,
     )
     context = ApplicationContext(
-        candidate_workflow=CandidateWorkflow(CandidateRepository())
+        candidate_workflow=CandidateWorkflow(CandidateRepository(database_paths.business))
     )
     coordinator = ArbitrageCoordinator(context.candidate_workflow)
 

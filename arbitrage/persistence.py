@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
+from arbitrage.database_config import DEFAULT_BUSINESS_DATABASE, get_database_paths
+
 from arbitrage.contracts import (
     CandidateDestination,
     CandidateEvaluation,
@@ -39,7 +41,7 @@ SCHEMA_VERSION = 2
 # authentication against a user with arbitrary Python/SQLite access.
 _IDENTITY_RESOLUTION_AUTHORITY = object()
 _EVALUATION_SELECTION_AUTHORITY = object()
-DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "arbitrage.db"
+DEFAULT_DATABASE_PATH = DEFAULT_BUSINESS_DATABASE
 TERMINAL_EVALUATION_STATUSES = {
     EvaluationStatus.COMPLETED,
     EvaluationStatus.FAILED,
@@ -169,8 +171,8 @@ def _connection(database_path: Path):
         connection.close()
 
 
-def initialize_database(database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
-    path = Path(database_path)
+def initialize_database(database_path: str | Path | None = None) -> None:
+    path = get_database_paths().business if database_path is None else Path(database_path)
     with _connection(path) as connection:
         connection.execute(
             """
@@ -413,8 +415,8 @@ def _artifact_from_row(row: sqlite3.Row) -> EvaluationArtifact:
 
 
 class CandidateRepository:
-    def __init__(self, database_path: str | Path = DEFAULT_DATABASE_PATH) -> None:
-        self.database_path = Path(database_path)
+    def __init__(self, database_path: str | Path | None = None) -> None:
+        self.database_path = get_database_paths().business if database_path is None else Path(database_path)
         initialize_database(self.database_path)
 
     def create_candidate(
