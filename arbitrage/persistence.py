@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -60,6 +60,12 @@ class RecordNotFoundError(PersistenceError):
 
 
 class EvaluationSelectionRefused(PersistenceError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class EvaluationContextRefused(PersistenceError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
@@ -128,6 +134,14 @@ class EconomicEvidenceSnapshot:
     @property
     def economically_ready(self) -> bool:
         return self.acquisition_ready and self.selling_ready
+
+
+@dataclass(frozen=True)
+class EvaluationContextSnapshot:
+    candidate: CandidateRecord
+    evaluation: CandidateEvaluation
+    artifacts: tuple[EvaluationArtifact, ...]
+    evidence: EconomicEvidenceSnapshot
 
 
 def _utc_now() -> datetime:
@@ -644,6 +658,38 @@ class CandidateRepository:
                 (candidate_id,),
             ).fetchall()
         return [_evaluation_from_row(row) for row in rows]
+
+    def evaluation_context_snapshot(self, candidate_id: str, evaluation_id: str) -> EvaluationContextSnapshot:
+        """One SQLite read snapshot; never initialize, repair, or write this DB."""
+        uri = self.database_path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            row = connection.execute(
+                "SELECT * FROM candidate_evaluations WHERE evaluation_id=?", (evaluation_id,)
+            ).fetchone()
+            if row is None:
+                raise EvaluationContextRefused("EVALUATION_NOT_FOUND", "Selected Evaluation does not exist")
+            evaluation = _evaluation_from_row(row)
+            row = connection.execute("SELECT * FROM candidates WHERE candidate_id=?", (candidate_id,)).fetchone()
+            if row is None:
+                raise EvaluationContextRefused("CANDIDATE_NOT_FOUND", "Selected Candidate does not exist")
+            candidate = _candidate_from_row(row)
+            if (candidate.candidate_id != candidate_id or evaluation.evaluation_id != evaluation_id
+                    or evaluation.candidate_id != candidate_id):
+                raise EvaluationContextRefused("RECORD_MISMATCH", "Active IDs and persisted relationship do not match")
+            if evaluation.status not in {EvaluationStatus.IN_PROGRESS, EvaluationStatus.WAITING_FOR_INPUT}:
+                raise EvaluationContextRefused("INELIGIBLE_EVALUATION", "Selected Evaluation is no longer unfinished")
+            if candidate.lifecycle_status != CandidateLifecycleStatus.INVESTIGATING:
+                raise EvaluationContextRefused("INELIGIBLE_CANDIDATE", "Selected Candidate is no longer INVESTIGATING")
+            rows = connection.execute(
+                "SELECT * FROM evaluation_artifacts WHERE evaluation_id=? ORDER BY sequence_number", (evaluation_id,)
+            ).fetchall()
+            return EvaluationContextSnapshot(
+                candidate, evaluation, tuple(_artifact_from_row(row) for row in rows),
+                self._economic_evidence_snapshot(connection, evaluation_id),
+            )
 
     @contextmanager
     def _evaluation_selection_transaction(self, evaluation_id: str, *, _authority):

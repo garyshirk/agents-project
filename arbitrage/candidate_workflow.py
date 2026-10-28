@@ -62,6 +62,7 @@ class CandidateWorkflow:
         self.repository = repository
         self.active = ActiveInvestigation()
         self._selection_lock = RLock()
+        self._context_selection: tuple[str, str] | None = None
 
     def _active_records(self):
         if not self.active.is_active:
@@ -90,10 +91,20 @@ class CandidateWorkflow:
     ) -> EvaluationSelectionResult:
         """Serialize reattachment in this workflow only; not a multi-process lease."""
         with self._selection_lock:
-            return self._select_existing_evaluation(
+            result = self._select_existing_evaluation(
                 evaluation_id, human_command=human_command, session_id=session_id,
                 _authority=_authority,
             )
+            if result.success:
+                self._context_selection = (result.candidate_id, result.evaluation_id)
+            return result
+
+    def inspect_evaluation_context(self):
+        """Read only the exact explicitly selected pair; no execution permission."""
+        from arbitrage.evaluation_context import inspect_selected_context
+
+        with self._selection_lock:
+            return inspect_selected_context(self)
 
     def _select_existing_evaluation(
         self, evaluation_id: str, *, human_command: str, session_id: str | None,

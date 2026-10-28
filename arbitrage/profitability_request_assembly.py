@@ -136,6 +136,25 @@ def evaluate_identity_acceptance(
     )
 
 
+def assess_identity_with_resolution(candidate, evaluation_id, evidence, resale):
+    """Shared inspection/assembly decision; no identity mutation or persistence."""
+    identity_decision = evaluate_identity_acceptance(candidate.product_identity, resale)
+    resolutions = confirmed_colorway_resolution(candidate, evaluation_id, evidence)
+    if resolutions and PATH in identity_decision.conflicting_fields:
+        remaining = [field for field in identity_decision.blocking_fields if field != PATH]
+        identity_decision = identity_decision.model_copy(update={
+            "blocking_fields": remaining,
+            "accepted": not remaining,
+            "allowed_unresolved_fields": list(identity_decision.unresolved_fields) if not remaining else [],
+            "human_confirmed_fields": [PATH],
+            "resolution_artifact_ids": [item.artifact_id for item in resolutions],
+            "rule_ids": [*identity_decision.rule_ids, "HUMAN_CONFIRMED_COLORWAY"],
+            "reasons": [*identity_decision.reasons,
+                        "Human confirmed only this exact colorway equivalence; original comparison and identities are preserved."],
+        })
+    return identity_decision, resolutions
+
+
 class AssemblyFailureCode(str, Enum):
     RECORD_MISMATCH = "RECORD_MISMATCH"
     MISSING_EVIDENCE = "MISSING_EVIDENCE"
@@ -630,20 +649,9 @@ def assemble_profitability_request(
             f"Acquisition currency {acquisition_currency} does not match resale currency {resale.currency}",
         )
 
-    identity_decision = evaluate_identity_acceptance(candidate.product_identity, resale)
-    resolutions = confirmed_colorway_resolution(candidate, evaluation.evaluation_id, evidence)
-    if resolutions and PATH in identity_decision.conflicting_fields:
-        remaining = [field for field in identity_decision.blocking_fields if field != PATH]
-        identity_decision = identity_decision.model_copy(update={
-            "blocking_fields": remaining,
-            "accepted": not remaining,
-            "allowed_unresolved_fields": list(identity_decision.unresolved_fields) if not remaining else [],
-            "human_confirmed_fields": [PATH],
-            "resolution_artifact_ids": [item.artifact_id for item in resolutions],
-            "rule_ids": [*identity_decision.rule_ids, "HUMAN_CONFIRMED_COLORWAY"],
-            "reasons": [*identity_decision.reasons,
-                        "Human confirmed only this exact colorway equivalence; original comparison and identities are preserved."],
-        })
+    identity_decision, resolutions = assess_identity_with_resolution(
+        candidate, evaluation.evaluation_id, evidence, resale,
+    )
     if "condition" in identity_decision.conflicting_fields:
         return _failure(
             AssemblyFailureCode.CONDITION_CONFLICT,
