@@ -1,7 +1,8 @@
 # V2 Checkpoint 1: persistence and review foundation
 
-This package has no agent orchestration, terminal commands, calculations, research,
-or commercial actions. Importing it does not open databases or start the app.
+This package has no agent orchestration, terminal commands, live research,
+or commercial actions. Checkpoint 3 adds offline calculations through the existing
+engine. Importing it does not open databases or start the app.
 The existing launcher/application still runs V1C behavior.
 
 ## Explicit database selection and initialization
@@ -30,8 +31,8 @@ opportunity/Evaluation table layouts are governed by V2 schema version 1.
 - `set_execution_state(evaluation_id, state, operation_key=...)`: explicit state
   recording only; no execution. Terminal execution is not automatically resumed.
 - `record_artifact(...)`: accepts only typed failure or assumption payloads here.
-  Checkpoint 2 also permits typed raw report storage. Other future categories
-  remain reserved; there is no calculation writer.
+  Checkpoint 2 also permits typed raw report storage. Checkpoint 3 adds dedicated
+  validated scenario/calculation writers; generic writes still refuse those types.
 - `record_summary(evaluation_id, draft, producer=..., operation_key=...)`: creates
   an immutable next summary revision, linking its predecessor automatically.
 - `get_opportunity`, `get_evaluation`, `get_artifact`, `list_artifacts`,
@@ -74,8 +75,8 @@ All three economic assessment states are supported with a nonblank decision
 rationale, explicit consequential uncertainties, facts, unknowns, assumptions, and
 limitations. Numerical output is optional. This foundation does not independently
 endorse an economic judgment. Descriptive text is not a validated calculation.
-Calculation references are refused until a validated calculation payload/writer is
-implemented in a later checkpoint.
+Checkpoint 3 permits exact validated calculation references; see its structural
+numerical-claim rules below. Earlier payloads remain readable.
 
 Assumptions retain their classification even when supported by historical records.
 Provenance distinguishes model general knowledge, current evidence, historical
@@ -161,3 +162,102 @@ remains PENDING until the expanded evidence subject is actually reviewed.
 No tables or schema migration were added. Older checkpoint-1 payloads remain
 readable; old application code will not understand new checkpoint-2 payload kinds.
 Tests use explicitly synthetic `example.invalid` sources and temporary databases.
+
+# Checkpoint 3: explicit economic scenarios and calculations
+
+V2 now stores `EconomicScenario` and `CalculationRecord` as immutable, versioned
+artifact payloads. No live agents, research, prompts, automatic scenarios, or
+commercial actions were added. V1C code and its database schema are unchanged.
+
+Use `record_scenario(evaluation_id, ScenarioDraft(...), producer=..., operation_key=...)`
+and `record_scenario_revision(previous_ref, draft, ...)`. Each independent initial
+scenario receives an application-owned lineage ID; revisions require its latest
+exact predecessor. Names do not implicitly select/merge lineages.
+
+Each `EconomicInput` has an explicit category, side, cost type, currency, rationale,
+provenance, and disposition: EVIDENCE, ASSUMPTION, UNKNOWN, NOT_APPLICABLE, or INCLUDED.
+Numeric evidence cites exact persisted records. Numeric assumptions cite existing
+`AssumptionRecord` artifacts and preserve their name, amount, provenance, and unit
+exactly. Assumption units are `CURRENCY/CostType`, for example
+`USD/FIXED_PER_BATCH` or `USD/PERCENT_OF_UNIT_PRICE` (percentage points of that
+side's unit price, not a monetary charge). Historical supporting references remain
+exact references to another Evaluation; no retrieval is performed. General model
+knowledge needs no URL and is never treated as an observation.
+
+`assemble_scenario(draft)` is pure and returns READY, INSUFFICIENT_INPUTS, or
+INVALID_INPUTS, with unsupported mappings distinguished explicitly. It reads no
+database, generates no values, and never executes arithmetic. `calculate_scenario`
+in `economics.py` calls the unchanged existing `_calculate_profitability` engine.
+Repository `calculate_scenario(exact_scenario_ref, producer=..., operation_key=...)`
+performs calculation and stores its immutable outcome, receipt, and new review
+subject in one transaction. Persistence faults roll back and do not return success.
+Engine exceptions are stored as ERROR outcomes with failure details; they are not
+retried. An idempotent retry returns its original receipt without recalculation.
+
+The adapter supports an explicitly authored point resale price, positive integer
+quantity, and exactly one modeled order. The engine's required low/high fields
+both receive that same supplied point, with no expected price or invented range.
+It does not generate midpoint/sensitivity scenarios. Fixed-per-unit costs multiply
+by quantity; fixed-per-batch costs apply once; percentage costs use the appropriate
+acquisition or resale price and percentage points, exactly as the engine does.
+Multi-order scenarios and non-per-unit primary prices are recorded as unsupported
+INVALID_INPUTS outcomes rather than guessed conversions. Currency conversion and
+multi-currency arithmetic are not implemented. UNKNOWN material inputs prevent
+arithmetic; explicit scenario-only assumptions may resolve named known unknowns
+without rewriting evidence. Nonmaterial unknowns remain visible in the engine's
+PARTIAL result and warnings.
+
+Purchase/resale prices, marketplace/payment fees, seller shipping, acquisition tax,
+and travel each require an explicit disposition before a complete calculation.
+This is cost coverage, not a product-eligibility policy. Other costs may be named
+explicitly. Missing categories are unresolved, never zero. Nonapplicability needs
+a rationale and produces no artificial cost row. Composite costs declare `covers`
+IDs; covered components must be INCLUDED and point back with `covered_by`, on the
+same economic side. Covered costs cannot also be numeric additive charges.
+Resale revenue cannot cover/erase a seller expense merely because a buyer-facing
+price includes shipping.
+Separate/integrated payment fees require an explicit relationship and rationale.
+These safeguards validate declarations, not the truth of fee applicability or
+semantic overlap hidden behind misleading unrelated IDs. The V1C fee/shipping
+utilities require capture-specific contracts and evidence-only shipping policies;
+using them wholesale would incorrectly block V2's explicit conditional assumptions.
+Their overlap/coverage principles are preserved in V2 declarations instead.
+
+Direct resale evidence must preserve one explicitly cited comparable's price and
+currency. Combining or modifying prices requires an explicit assumption, never
+automatic averaging. The original evidence classification and exact comparable
+revision are retained. Cited assessments must bind that exact comparable revision.
+There is no exact-identity, completed-sale, minimum-count, or comparability gate.
+Unit descriptions and applicability remain author assertions; Python never parses
+free-text comparable units to invent conversions or verify product equivalence.
+
+Calculations carry the full exact scenario manifest, evidence/assumption refs,
+validated engine request JSON, validated engine result JSON when calculated,
+adapter version, engine source SHA-256, timestamps, and producer. Engine JSON is
+stored as immutable text validated against existing engine contracts, avoiding
+mutable nested legacy models; decoding produces fresh typed objects. Engine
+COMPLETE/PARTIAL maps to CALCULATED, independently of evidence quality. Other
+outcomes are INSUFFICIENT_INPUTS, INVALID_INPUTS, and ERROR, without invented profit.
+
+Read APIs: `list_scenario_history`, `get_scenario`, `get_current_scenario`,
+`list_current_scenarios`, `list_calculation_history` (optionally exact `scenario=`),
+and `get_latest_calculation`. Old revisions/results remain retrievable. Changes to
+evidence do not rerun or rewrite calculations.
+
+Summaries can now cite real CALCULATION artifacts from their exact Evaluation.
+`SummaryDraft.numerical_estimate=True` requires an estimate assessment state and
+CALCULATED references. Estimate summaries cannot cite incomplete calculations as
+completed arithmetic. Existing qualitative labels without numerical claims remain
+compatible. INSUFFICIENT_INFORMATION may cite failed/insufficient calculations,
+but cannot claim a numerical estimate. No deterministic economic-quality judgment
+selects or overrides the author's assessment state. Detailed numerical results live
+in calculations, not arbitrary summary number fields. Free-text claims are attributed
+author statements and are not parsed for semantic truth.
+
+Every new scenario and calculation creates a new partial review subject. Earlier
+human decisions become historical; published summaries are not overwritten.
+All statuses stay in the review queue. No schema migration, production database
+initialization, historical rewrite, or V2 runtime orchestration is performed.
+Existing Checkpoint 1/2 JSON remains readable, and earlier qualitative-summary
+idempotency receipts remain replayable. Older code cannot read the new payload
+kinds; no historical artifacts or receipts are rewritten.

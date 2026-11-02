@@ -4,9 +4,9 @@ from enum import Enum
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from arbitrage.contracts import NonNegativeDecimalString
+from arbitrage.contracts import CostType, InputBasis, NonNegativeDecimalString, ProfitabilityRequest, ProfitabilityResult
 
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -189,6 +189,8 @@ class SummaryDraft(Contract):
     evidence_references: tuple[ArtifactRef, ...] = ()
     calculation_references: tuple[ArtifactRef, ...] = ()
     policy_version: Text
+    # Explicit numerical claims, unlike a qualitative label, require a calculation.
+    numerical_estimate: bool = False
 
 
 class EconomicAssessmentSummary(SummaryDraft):
@@ -393,6 +395,154 @@ class ComparableAssessment(AssessmentDraft):
         return self
 
 
+class EconomicInput(Contract):
+    """Explicit value/disposition for one named economic component; no text parsing."""
+    input_id: Text
+    category: Literal["PURCHASE_PRICE", "RESALE_PRICE", "MARKETPLACE_FEE", "PAYMENT_FEE",
+                      "SELLER_SHIPPING", "ACQUISITION_TAX", "ACQUISITION_TRAVEL", "OTHER"]
+    side: Literal["ACQUISITION", "SALE"]
+    disposition: Literal["EVIDENCE", "ASSUMPTION", "UNKNOWN", "NOT_APPLICABLE", "INCLUDED"]
+    amount: NonNegativeDecimalString | None = None
+    currency: Text | None = None
+    cost_type: CostType
+    basis: InputBasis | None = None
+    provenance: Provenance
+    assumption: ArtifactRef | None = None
+    evidence_references: tuple[ArtifactRef, ...] = ()
+    material: bool = True
+    rationale: Text
+    limitations: tuple[Text, ...] = ()
+    covered_by: Text | None = None
+    covers: tuple[Text, ...] = ()
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def no_float_money(cls, value):
+        if isinstance(value, (float, bool)):
+            raise ValueError("monetary input must use Decimal or decimal text, not float/bool")
+        return value
+
+    @model_validator(mode="after")
+    def explicit_disposition(self):
+        numeric = self.disposition in {"EVIDENCE", "ASSUMPTION"}
+        if numeric != (self.amount is not None) or numeric != (self.basis is not None):
+            raise ValueError("numeric dispositions require amount and basis; other dispositions forbid them")
+        assumed = self.provenance.information_kind in {
+            InformationKind.AGENT_ASSUMPTION, InformationKind.HUMAN_ASSUMPTION, InformationKind.HUMAN_CORRECTION}
+        if self.disposition == "ASSUMPTION":
+            if self.assumption is None or self.basis != InputBasis.ASSUMED or not assumed:
+                raise ValueError("assumptions require exact assumption artifact and ASSUMED basis/provenance")
+        elif self.assumption is not None:
+            raise ValueError("only explicit assumptions may cite an assumption as their value")
+        if self.disposition == "EVIDENCE" and (assumed or self.basis == InputBasis.ASSUMED):
+            raise ValueError("assumptions must not be relabeled as evidence")
+        if self.disposition == "EVIDENCE" and not self.evidence_references:
+            raise ValueError("evidence amounts require exact persisted evidence")
+        if (self.disposition == "INCLUDED") != (self.covered_by is not None):
+            raise ValueError("included costs require an explicit covering component only")
+        return self
+
+
+class ScenarioDraft(Contract):
+    name: Text
+    currency: Text
+    quantity: int = Field(ge=1, strict=True)
+    order_count: int = Field(default=1, ge=1, strict=True)
+    unit_description: Text
+    product_description: Text
+    destination: Text
+    inputs: tuple[EconomicInput, ...]
+    comparable_references: tuple[ArtifactRef, ...] = ()
+    assessment_references: tuple[ArtifactRef, ...] = ()
+    evidence_references: tuple[ArtifactRef, ...] = ()
+    known_unknowns: tuple[UnknownEconomicInput, ...] = ()
+    limitations: tuple[Text, ...] = ()
+    policy_version: Text
+    fee_relationship: Literal["INTEGRATED", "SEPARATE", "UNRESOLVED"] | None = None
+    fee_relationship_rationale: Text | None = None
+
+
+class EconomicScenario(ScenarioDraft):
+    schema_version: Literal["v2-economic-scenario-v1"] = "v2-economic-scenario-v1"
+    scenario_id: Text
+    opportunity_id: Text
+    evaluation_id: Text
+    revision: int = Field(ge=1)
+    supersedes: ArtifactRef | None = None
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def revision_binding(self):
+        if (self.revision == 1) != (self.supersedes is None):
+            raise ValueError("scenario revisions require an exact predecessor")
+        return self
+
+
+class ComputationStatus(str, Enum):
+    CALCULATED = "CALCULATED"
+    INSUFFICIENT_INPUTS = "INSUFFICIENT_INPUTS"
+    INVALID_INPUTS = "INVALID_INPUTS"
+    ERROR = "ERROR"
+
+
+class ScenarioAssembly(Contract):
+    status: Literal["READY", "INSUFFICIENT_INPUTS", "INVALID_INPUTS"]
+    request_json: str | None = None
+    unresolved_inputs: tuple[Text, ...] = ()
+    validation_errors: tuple[Text, ...] = ()
+    unsupported_mappings: tuple[Text, ...] = ()
+
+    @model_validator(mode="after")
+    def valid_request(self):
+        if (self.status == "READY") != (self.request_json is not None):
+            raise ValueError("only ready assembly may contain an engine request")
+        if self.request_json is not None:
+            ProfitabilityRequest.model_validate_json(self.request_json)
+        return self
+
+
+class CalculationOutcome(Contract):
+    status: ComputationStatus
+    # Canonical JSON snapshots avoid mutable nested V1C models in frozen artifacts.
+    request_json: str | None = None
+    engine_output_json: str | None = None
+    unresolved_inputs: tuple[Text, ...] = ()
+    validation_errors: tuple[Text, ...] = ()
+    unsupported_mappings: tuple[Text, ...] = ()
+    failure: FailureRecord | None = None
+
+    @model_validator(mode="after")
+    def validate_engine_snapshots(self):
+        request = None
+        if self.request_json is not None:
+            request = ProfitabilityRequest.model_validate_json(self.request_json)
+        output = ProfitabilityResult.model_validate_json(self.engine_output_json) if self.engine_output_json is not None else None
+        if self.status == ComputationStatus.CALCULATED:
+            if self.request_json is None or output is None or output.low_case is None or output.high_case is None:
+                raise ValueError("calculated outcomes require validated request and numerical engine output")
+            if self.unresolved_inputs or self.validation_errors or self.unsupported_mappings or self.failure:
+                raise ValueError("calculated outcome cannot also be a failure")
+            if (output.status.value not in {"COMPLETE", "PARTIAL"} or output.currency != request.acquisition.currency
+                    or output.quantity != request.acquisition.quantity):
+                raise ValueError("engine result status/currency/quantity must match calculated request")
+        elif output is not None:
+            raise ValueError("non-calculated outcomes cannot carry numerical engine output")
+        if self.status == ComputationStatus.ERROR and self.failure is None:
+            raise ValueError("error outcomes require durable failure details")
+        return self
+
+
+class CalculationRecord(CalculationOutcome):
+    schema_version: Literal["v2-calculation-v1"] = "v2-calculation-v1"
+    scenario: ArtifactRef
+    scenario_manifest: EconomicScenario
+    evidence_references: tuple[ArtifactRef, ...]
+    assumption_references: tuple[ArtifactRef, ...]
+    adapter_version: Text
+    engine_version: Text
+    created_at: AwareDatetime
+
+
 class ArtifactType(str, Enum):
     REVIEW_SUBJECT = "REVIEW_SUBJECT"
     FAILURE = "FAILURE"
@@ -405,11 +555,12 @@ class ArtifactType(str, Enum):
     COMPARABLE_ASSESSMENT = "COMPARABLE_ASSESSMENT"
     ECONOMIC_FINDINGS = "ECONOMIC_FINDINGS"
     CALCULATION = "CALCULATION"
+    ECONOMIC_SCENARIO = "ECONOMIC_SCENARIO"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
-    | RawResearchReport | ResaleComparable | ComparableAssessment,
+    | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord,
     Field(discriminator="schema_version"),
 ]
 
@@ -433,6 +584,8 @@ class Artifact(Contract):
             ArtifactType.RAW_RESEARCH_REPORT: RawResearchReport,
             ArtifactType.RESALE_COMPARABLE: ResaleComparable,
             ArtifactType.COMPARABLE_ASSESSMENT: ComparableAssessment,
+            ArtifactType.ECONOMIC_SCENARIO: EconomicScenario,
+            ArtifactType.CALCULATION: CalculationRecord,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -453,6 +606,17 @@ class Artifact(Contract):
             timestamp = self.payload.captured_at if isinstance(self.payload, ResaleComparable) else self.payload.assessed_at
             if timestamp != self.created_at:
                 raise ValueError("capture/assessment timestamp must be application-owned artifact time")
+        if isinstance(self.payload, (EconomicScenario, CalculationRecord)):
+            manifest = self.payload if isinstance(self.payload, EconomicScenario) else self.payload.scenario_manifest
+            if (manifest.evaluation_id != self.reference.evaluation_id
+                    or manifest.opportunity_id != self.reference.opportunity_id
+                    or self.payload.created_at != self.created_at):
+                raise ValueError("economic artifact ownership/time mismatch")
+            if isinstance(self.payload, CalculationRecord):
+                ref = self.payload.scenario
+                if (ref.evaluation_id != self.reference.evaluation_id or ref.opportunity_id != self.reference.opportunity_id
+                        or ref.sequence >= self.reference.sequence):
+                    raise ValueError("calculation must reference earlier scenario in this Evaluation")
         return self
 
 

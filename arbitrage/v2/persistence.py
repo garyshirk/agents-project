@@ -16,7 +16,9 @@ from arbitrage.v2.contracts import (
     ReviewQueueEntry, ReviewQueuePage, SummaryDraft,
     AssessmentDraft, AssessmentRevisionStatus, ComparableAssessment, ComparableDraft,
     RawResearchReport, ResaleComparable, ReviewEvidenceSnapshot,
+    AssessmentState, CalculationRecord, ComputationStatus, EconomicScenario, ScenarioDraft,
 )
+from arbitrage.v2.economics import ADAPTER_VERSION, ENGINE_VERSION, calculate_scenario
 
 
 class V2PersistenceError(ValueError):
@@ -263,10 +265,20 @@ class V2Repository:
 
     def record_summary(self, evaluation_id: str, draft: SummaryDraft, *, producer: Producer, operation_key: str) -> Artifact:
         draft, producer = SummaryDraft.model_validate(draft), Producer.model_validate(producer)
-        if draft.calculation_references:
-            raise V2PersistenceError("Calculation artifacts are reserved for a later checkpoint; text is not a calculation result")
         def perform(c):
             evaluation = self._evaluation(c, evaluation_id)
+            calculations = [self._typed_reference(c, ref, evaluation_id, {ArtifactType.CALCULATION})
+                            for ref in draft.calculation_references]
+            for calculation in calculations:
+                scenario = self._typed_reference(c, calculation.payload.scenario, evaluation_id, {ArtifactType.ECONOMIC_SCENARIO})
+                if scenario.payload != calculation.payload.scenario_manifest:
+                    raise V2PersistenceError("Calculation manifest does not match its exact scenario")
+            if draft.numerical_estimate:
+                if draft.assessment_state == AssessmentState.INSUFFICIENT_INFORMATION or not calculations:
+                    raise V2PersistenceError("Numerical estimate requires an estimate summary and actual calculation")
+            if draft.assessment_state != AssessmentState.INSUFFICIENT_INFORMATION and any(
+                    a.payload.status != ComputationStatus.CALCULATED for a in calculations):
+                raise V2PersistenceError("An estimate cannot cite an incomplete calculation as completed arithmetic")
             for ref in draft.evidence_references:
                 self._reference(c, ref, evaluation_id)
             for item in (*draft.known_economic_facts, *draft.assumptions):
@@ -274,12 +286,15 @@ class V2Repository:
             old = self._artifact(c, evaluation.current_summary.artifact_id) if evaluation.current_summary else None
             summary = EconomicAssessmentSummary(**draft.model_dump(), revision=old.payload.revision + 1 if old else 1,
                 supersedes=old.reference if old else None)
-            parents = tuple(dict.fromkeys((*draft.evidence_references, *((old.reference,) if old else ()))))
+            parents = tuple(dict.fromkeys((*draft.evidence_references, *draft.calculation_references,
+                                          *((old.reference,) if old else ()))))
             artifact = self._insert_artifact(c, evaluation_id, ArtifactType.EVALUATION_SUMMARY, summary, producer, parents)
             c.execute("UPDATE v2_evaluations SET current_summary_id=?,current_subject_id=?,updated_at=? WHERE evaluation_id=?",
                 (artifact.reference.artifact_id, artifact.reference.artifact_id, artifact.created_at.isoformat(), evaluation_id))
             return artifact
-        return self._once(operation_key, "summary", {"evaluation_id": evaluation_id, "draft": draft.model_dump(mode="json"),
+        # Preserve the canonical request of pre-Checkpoint-3 qualitative summary receipts.
+        encoded_draft = draft.model_dump(mode="json", exclude={"numerical_estimate"} if not draft.numerical_estimate else set())
+        return self._once(operation_key, "summary", {"evaluation_id": evaluation_id, "draft": encoded_draft,
             "producer": producer.model_dump(mode="json")}, Artifact, perform)
 
     def record_review(self, evaluation_id: str, subject: ArtifactRef, decision: ReviewDecision, rationale: str, *,
@@ -515,3 +530,131 @@ class V2Repository:
             evaluation = self._evaluation(c, evaluation_id)
             rows = c.execute("SELECT artifact_id FROM v2_artifacts WHERE evaluation_id=? ORDER BY sequence", (evaluation_id,)).fetchall()
             return ReviewEvidenceSnapshot(evaluation=evaluation, artifacts=tuple(self._artifact(c, r[0]) for r in rows))
+
+    def _scenario_references(self, c, evaluation_id, draft):
+        """Validate identities, not truth or comparability. Never select evidence implicitly."""
+        refs = list(draft.evidence_references)
+        for ref in draft.evidence_references:
+            self._reference(c, ref, evaluation_id)
+        for ref in draft.comparable_references:
+            self._typed_reference(c, ref, evaluation_id, {ArtifactType.RESALE_COMPARABLE})
+            refs.append(ref)
+        for ref in draft.assessment_references:
+            assessment = self._typed_reference(c, ref, evaluation_id, {ArtifactType.COMPARABLE_ASSESSMENT})
+            if assessment.payload.comparable not in draft.comparable_references:
+                raise V2PersistenceError("Cited assessment must bind an explicitly cited exact comparable revision")
+            refs.append(ref)
+        for item in draft.inputs:
+            self._validate_provenance(c, item.provenance, evaluation_id)
+            for category in (KnowledgeSource.CURRENT_EVALUATION_EVIDENCE, KnowledgeSource.HISTORICAL_EVALUATIONS):
+                if category in item.provenance.sources and not any(s.source == category for s in item.provenance.supporting_records):
+                    raise V2PersistenceError("Economic evidence-based provenance requires exact supporting records")
+            for support in item.provenance.supporting_records:
+                if support.artifact.evaluation_id == evaluation_id:
+                    refs.append(support.artifact)
+            for ref in item.evidence_references:
+                artifact = self._reference(c, ref, evaluation_id)
+                if item.disposition == "EVIDENCE" and artifact.artifact_type in {
+                        ArtifactType.SCENARIO_ASSUMPTION, ArtifactType.ECONOMIC_SCENARIO, ArtifactType.CALCULATION}:
+                    raise V2PersistenceError("Assumptions/scenarios/calculations are not direct observed price/cost evidence")
+                refs.append(ref)
+            if item.assumption:
+                assumption = self._typed_reference(c, item.assumption, evaluation_id, {ArtifactType.SCENARIO_ASSUMPTION}).payload.assumption
+                if (assumption.name != item.input_id or assumption.amount != item.amount
+                        or assumption.unit != f"{item.currency}/{item.cost_type.value}"
+                        or assumption.provenance != item.provenance):
+                    raise V2PersistenceError("Scenario assumption must exactly preserve named amount, unit/currency, and provenance")
+                refs.append(item.assumption)
+            if item.category == "RESALE_PRICE" and item.disposition == "EVIDENCE":
+                matches = [self._typed_reference(c, ref, evaluation_id, {ArtifactType.RESALE_COMPARABLE})
+                           for ref in item.evidence_references if ref in draft.comparable_references]
+                if len(matches) != 1:
+                    raise V2PersistenceError("Direct resale evidence must cite one exact comparable; combinations require an explicit assumption")
+                price = matches[0].payload.price_evidence
+                if price.amount != item.amount or price.currency != item.currency:
+                    raise V2PersistenceError("Direct resale value must preserve the cited price; no averaging or inference")
+        return tuple(dict.fromkeys(refs))
+
+    def record_scenario(self, evaluation_id, draft: ScenarioDraft, *, producer: Producer,
+                        operation_key: str, predecessor: ArtifactRef | None = None):
+        draft, producer = ScenarioDraft.model_validate(draft), Producer.model_validate(producer)
+        predecessor = ArtifactRef.model_validate(predecessor) if predecessor else None
+        def perform(c):
+            evaluation = self._evaluation(c, evaluation_id)
+            old = self._typed_reference(c, predecessor, evaluation_id, {ArtifactType.ECONOMIC_SCENARIO}) if predecessor else None
+            if old and self._current_lineage(c, evaluation_id, old.payload.scenario_id,
+                    ArtifactType.ECONOMIC_SCENARIO, "scenario_id").reference != predecessor:
+                raise V2PersistenceError("Scenario revision requires latest exact predecessor")
+            refs = self._scenario_references(c, evaluation_id, draft)
+            now = _now()
+            payload = EconomicScenario(**draft.model_dump(), scenario_id=old.payload.scenario_id if old else str(uuid4()),
+                opportunity_id=evaluation.opportunity_id, evaluation_id=evaluation_id,
+                revision=old.payload.revision + 1 if old else 1, supersedes=predecessor, created_at=now)
+            parents = tuple(dict.fromkeys((*refs, *((predecessor,) if predecessor else ()))))
+            artifact = self._insert_artifact(c, evaluation_id, ArtifactType.ECONOMIC_SCENARIO, payload, producer,
+                                             parents, created_at=now)
+            self._partial_subject(c, evaluation_id, "New economic scenario; no assessment state inferred.", (artifact.reference,))
+            return artifact
+        return self._once(operation_key, "economic_scenario", {"evaluation_id": evaluation_id,
+            "draft": draft.model_dump(mode="json"), "producer": producer.model_dump(mode="json"),
+            "predecessor": predecessor.model_dump(mode="json") if predecessor else None}, Artifact, perform)
+
+    def record_scenario_revision(self, previous: ArtifactRef, draft: ScenarioDraft, **options):
+        previous = ArtifactRef.model_validate(previous)
+        return self.record_scenario(previous.evaluation_id, draft, predecessor=previous, **options)
+
+    def calculate_scenario(self, scenario: ArtifactRef, *, producer: Producer, operation_key: str):
+        """Compute from the exact persisted revision and atomically record outcome + review subject."""
+        scenario, producer = ArtifactRef.model_validate(scenario), Producer.model_validate(producer)
+        def perform(c):
+            artifact = self._typed_reference(c, scenario, scenario.evaluation_id, {ArtifactType.ECONOMIC_SCENARIO})
+            manifest = artifact.payload
+            draft = ScenarioDraft.model_validate(manifest.model_dump(include=set(ScenarioDraft.model_fields)))
+            refs = self._scenario_references(c, scenario.evaluation_id, draft)
+            assumptions = tuple(dict.fromkeys(i.assumption for i in draft.inputs if i.assumption))
+            outcome = calculate_scenario(draft)
+            now = _now()
+            # Historical support remains an exact manifest reference, never a same-Evaluation parent.
+            evidence_refs = tuple(dict.fromkeys((*refs, *(s.artifact for i in draft.inputs
+                for s in i.provenance.supporting_records))))
+            payload = CalculationRecord(**outcome.model_dump(), scenario=scenario, scenario_manifest=manifest,
+                evidence_references=tuple(r for r in evidence_refs if r not in assumptions), assumption_references=assumptions,
+                adapter_version=ADAPTER_VERSION, engine_version=ENGINE_VERSION, created_at=now)
+            result = self._insert_artifact(c, scenario.evaluation_id, ArtifactType.CALCULATION, payload, producer,
+                tuple(dict.fromkeys((scenario, *refs))), created_at=now)
+            self._partial_subject(c, scenario.evaluation_id, "New calculation outcome; assessment remains author-selected.", (result.reference,))
+            return result
+        return self._once(operation_key, "calculate_scenario", {"scenario": scenario.model_dump(mode="json"),
+            "producer": producer.model_dump(mode="json")}, Artifact, perform)
+
+    def list_scenario_history(self, evaluation_id):
+        with self._connection() as c:
+            return self._evidence_history(c, evaluation_id, ArtifactType.ECONOMIC_SCENARIO)
+
+    def get_scenario(self, reference: ArtifactRef):
+        reference = ArtifactRef.model_validate(reference)
+        with self._connection() as c:
+            return self._typed_reference(c, reference, reference.evaluation_id, {ArtifactType.ECONOMIC_SCENARIO})
+
+    def get_current_scenario(self, evaluation_id, scenario_id):
+        with self._connection() as c:
+            return self._current_lineage(c, evaluation_id, scenario_id, ArtifactType.ECONOMIC_SCENARIO, "scenario_id")
+
+    def list_current_scenarios(self, evaluation_id):
+        with self._connection() as c:
+            history = self._evidence_history(c, evaluation_id, ArtifactType.ECONOMIC_SCENARIO)
+            latest = {a.payload.scenario_id: a for a in history}
+            return tuple(sorted(latest.values(), key=lambda a: a.reference.sequence))
+
+    def list_calculation_history(self, evaluation_id, *, scenario: ArtifactRef | None = None):
+        with self._connection() as c:
+            if scenario is not None:
+                scenario = ArtifactRef.model_validate(scenario)
+                self._typed_reference(c, scenario, evaluation_id, {ArtifactType.ECONOMIC_SCENARIO})
+            return tuple(a for a in self._evidence_history(c, evaluation_id, ArtifactType.CALCULATION)
+                         if scenario is None or a.payload.scenario == scenario)
+
+    def get_latest_calculation(self, scenario: ArtifactRef):
+        scenario = ArtifactRef.model_validate(scenario)
+        history = self.list_calculation_history(scenario.evaluation_id, scenario=scenario)
+        return history[-1] if history else None
