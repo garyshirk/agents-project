@@ -17,6 +17,7 @@ from arbitrage.v2.contracts import (
     AssessmentDraft, AssessmentRevisionStatus, ComparableAssessment, ComparableDraft,
     RawResearchReport, ResaleComparable, ReviewEvidenceSnapshot,
     AssessmentState, CalculationRecord, ComputationStatus, EconomicScenario, ScenarioDraft,
+    StepAttempt, StepInputManifest, WorkflowEvent, WorkflowLimits, WorkflowSnapshot, WorkflowStep,
 )
 from arbitrage.v2.economics import ADAPTER_VERSION, ENGINE_VERSION, calculate_scenario
 
@@ -219,11 +220,13 @@ class V2Repository:
 
     def accept_opportunity(self, submission: OpportunitySubmission, *, operation_key: str) -> AcceptedEvaluation:
         submission = OpportunitySubmission.model_validate(submission)
-        def perform(c):
-            identifier, now = str(uuid4()), _now()
-            c.execute("INSERT INTO v2_opportunities VALUES (?,?,?)", (identifier, submission.model_dump_json(), now.isoformat()))
-            return AcceptedEvaluation(opportunity=self._opportunity(c, identifier), evaluation=self._create_evaluation(c, identifier))
-        return self._once(operation_key, "accept", submission.model_dump(mode="json"), AcceptedEvaluation, perform)
+        return self._once(operation_key, "accept", submission.model_dump(mode="json"), AcceptedEvaluation,
+                          lambda c: self._accept_opportunity(c,submission))
+
+    def _accept_opportunity(self, c, submission):
+        identifier, now = str(uuid4()), _now()
+        c.execute("INSERT INTO v2_opportunities VALUES (?,?,?)",(identifier,submission.model_dump_json(),now.isoformat()))
+        return AcceptedEvaluation(opportunity=self._opportunity(c,identifier),evaluation=self._create_evaluation(c,identifier))
 
     def create_evaluation(self, opportunity_id: str, *, predecessor_evaluation_id=None, operation_key: str) -> Evaluation:
         return self._once(operation_key, "evaluate", {"opportunity_id": opportunity_id, "predecessor": predecessor_evaluation_id},
@@ -658,3 +661,225 @@ class V2Repository:
         scenario = ArtifactRef.model_validate(scenario)
         history = self.list_calculation_history(scenario.evaluation_id, scenario=scenario)
         return history[-1] if history else None
+
+    def _workflow_snapshot(self, c, evaluation_id):
+        return WorkflowSnapshot(evaluation=self._evaluation(c, evaluation_id),
+            events=self._evidence_history(c, evaluation_id, ArtifactType.WORKFLOW_EVENT),
+            attempts=self._evidence_history(c, evaluation_id, ArtifactType.RESEARCH_ATTEMPT))
+
+    def get_workflow(self, evaluation_id):
+        with self._connection() as c:
+            return self._workflow_snapshot(c, evaluation_id)
+
+    def get_operation_artifact(self, operation_key):
+        """Exact receipt lookup for explicit offline reconciliation; never executes an operation."""
+        with self._connection() as c:
+            row = c.execute("SELECT result_json FROM v2_operations WHERE operation_key=?", (operation_key,)).fetchone()
+            return Artifact.model_validate_json(row[0]) if row else None
+
+    def _workflow_event(self, c, evaluation_id, *, event, phase, limits, reason, run=None,
+                        owner_token=None, steps=(), attempts=(), failure=None):
+        evaluation = self._evaluation(c, evaluation_id)
+        payload = WorkflowEvent(opportunity_id=evaluation.opportunity_id, evaluation_id=evaluation_id,
+            event=event, phase=phase, limits=limits, reason=reason, run=run, owner_token=owner_token,
+            steps=steps, attempt_references=attempts, failure=failure)
+        return self._insert_artifact(c, evaluation_id, ArtifactType.WORKFLOW_EVENT, payload, APPLICATION,
+            tuple(dict.fromkeys((*((run,) if run else ()), *attempts))))
+
+    def accept_workflow(self, submission: OpportunitySubmission, limits: WorkflowLimits, *, operation_key):
+        submission,limits = OpportunitySubmission.model_validate(submission),WorkflowLimits.model_validate(limits)
+        def perform(c):
+            accepted = self._accept_opportunity(c,submission)
+            self._workflow_event(c,accepted.evaluation.evaluation_id,event="INITIALIZED",phase="ACCEPTED",limits=limits,
+                                 reason="Accepted offline workflow; no specialist has started.")
+            return accepted
+        return self._once(operation_key,"workflow_accept",{"submission":submission.model_dump(mode="json"),
+            "limits":limits.model_dump(mode="json")},AcceptedEvaluation,perform)
+
+    def initialize_workflow(self, evaluation_id, limits: WorkflowLimits, *, operation_key):
+        limits = WorkflowLimits.model_validate(limits)
+        def perform(c):
+            snapshot = self._workflow_snapshot(c, evaluation_id)
+            if snapshot.events or snapshot.evaluation.execution_state != ExecutionState.RUNNING:
+                raise V2PersistenceError("Workflow requires an uninitialized running Evaluation")
+            return self._workflow_event(c,evaluation_id,event="INITIALIZED",phase="ACCEPTED",limits=limits,
+                                        reason="Accepted offline workflow; no specialist has started.")
+        return self._once(operation_key,"workflow_initialize",{"evaluation_id":evaluation_id,
+            "limits":limits.model_dump(mode="json")},Artifact,perform)
+
+    @staticmethod
+    def _open_workflow_runs(snapshot):
+        ended = {a.payload.run for a in snapshot.events if a.payload.event in {"RUN_ENDED","RECOVERED"}}
+        return tuple(a for a in snapshot.events if a.payload.event == "RUN_STARTED" and a.reference not in ended)
+
+    def begin_workflow_run(self, evaluation_id, steps: tuple[WorkflowStep, ...], *, owner_token, operation_key):
+        steps = tuple(WorkflowStep.model_validate(s) for s in steps)
+        def perform(c):
+            snapshot = self._workflow_snapshot(c,evaluation_id)
+            if not snapshot.events or snapshot.evaluation.execution_state != ExecutionState.RUNNING:
+                raise V2PersistenceError("Initialize a nonterminal workflow before running")
+            if self._open_workflow_runs(snapshot):
+                raise V2PersistenceError("Unfinished run requires explicit recovery; no implicit replay")
+            limits = snapshot.events[0].payload.limits
+            starts = [a for a in snapshot.attempts if a.payload.status == "STARTED"]
+            if not steps or len({s.step_id for s in steps}) != len(steps):
+                raise V2PersistenceError("Supply a nonempty bounded batch with distinct step IDs")
+            planned_ids = {s.step_id for s in steps}
+            if len({a.payload.input_manifest.step_id for a in starts} | planned_ids) > limits.max_workflow_steps:
+                raise V2PersistenceError("Workflow step limit exceeded")
+            if sum(a.payload.input_manifest.role != "CALCULATION" for a in starts) + sum(s.role != "CALCULATION" for s in steps) > limits.max_specialist_invocations:
+                raise V2PersistenceError("Specialist invocation limit exceeded")
+            if sum(a.payload.input_manifest.role == "CALCULATION" for a in starts) + sum(s.role == "CALCULATION" for s in steps) > limits.max_calculation_attempts:
+                raise V2PersistenceError("Calculation attempt limit exceeded")
+            for step in steps:
+                for ref in step.context_references:
+                    self._reference(c,ref,evaluation_id)
+                prior = [a for a in snapshot.attempts if a.payload.input_manifest.step_id == step.step_id]
+                previous_starts = [a for a in prior if a.payload.status == "STARTED"]
+                if len(previous_starts) >= limits.max_attempts_per_step:
+                    raise V2PersistenceError("Per-step attempt limit exceeded")
+                if prior:
+                    last = prior[-1]
+                    if (step.retry_of != last.reference or last.payload.status in {"STARTED","SUCCEEDED"}
+                            or step.role != last.payload.input_manifest.role):
+                        raise V2PersistenceError("Retry must explicitly identify the latest unsuccessful attempt with the same role")
+                elif step.retry_of is not None:
+                    raise V2PersistenceError("Initial step cannot name another attempt")
+            return self._workflow_event(c,evaluation_id,event="RUN_STARTED",phase="RUNNING",limits=limits,
+                reason="Explicit bounded offline batch.",owner_token=owner_token,steps=steps)
+        # Token is acquisition identity, not request content; replayers cannot acquire the original claim.
+        return self._once(operation_key,"workflow_run",{"evaluation_id":evaluation_id,
+            "steps":[s.model_dump(mode="json") for s in steps]},Artifact,perform)
+
+    def begin_workflow_attempt(self, run: ArtifactRef, step_id, *, owner_token, operation_key):
+        run = ArtifactRef.model_validate(run)
+        def perform(c):
+            event = self._typed_reference(c,run,run.evaluation_id,{ArtifactType.WORKFLOW_EVENT})
+            snapshot = self._workflow_snapshot(c,run.evaluation_id)
+            if (snapshot.evaluation.execution_state != ExecutionState.RUNNING
+                    or event not in self._open_workflow_runs(snapshot) or event.payload.owner_token != owner_token):
+                raise V2PersistenceError("Run is closed or caller does not own its invocation claim")
+            matching = [s for s in event.payload.steps if s.step_id == step_id]
+            if len(matching) != 1:
+                raise V2PersistenceError("Step is not in this exact run")
+            if any(a.payload.run == run and a.payload.input_manifest.step_id == step_id for a in snapshot.attempts):
+                raise V2PersistenceError("Step already attempted in this run")
+            step = matching[0]
+            opportunity = self._opportunity(c,run.opportunity_id)
+            manifest = StepInputManifest(opportunity_id=run.opportunity_id,evaluation_id=run.evaluation_id,
+                step_id=step.step_id,role=step.role,submission=opportunity.submission,
+                context_references=step.context_references,context_text=step.context_text,
+                fixture=step.fixture,scenario=step.scenario)
+            number = 1 + sum(a.payload.status == "STARTED" and a.payload.input_manifest.step_id == step_id for a in snapshot.attempts)
+            now = _now()
+            payload = StepAttempt(attempt_id=str(uuid4()),attempt_number=number,run=run,
+                input_manifest=manifest,status="STARTED",started_at=now)
+            return self._insert_artifact(c,run.evaluation_id,ArtifactType.RESEARCH_ATTEMPT,payload,APPLICATION,
+                tuple(dict.fromkeys((run,*step.context_references))),created_at=now)
+        return self._once(operation_key,"workflow_attempt",{"run":run.model_dump(mode="json"),"step_id":step_id},Artifact,perform)
+
+    def complete_workflow_attempt(self, start: ArtifactRef, status, *, outputs=(), failure=None, operation_key):
+        start = ArtifactRef.model_validate(start)
+        outputs = tuple(ArtifactRef.model_validate(r) for r in outputs)
+        failure = FailureRecord.model_validate(failure) if failure is not None else None
+        def perform(c):
+            original = self._typed_reference(c,start,start.evaluation_id,{ArtifactType.RESEARCH_ATTEMPT})
+            if original.payload.status != "STARTED":
+                raise V2PersistenceError("Completion must identify original STARTED attempt")
+            snapshot = self._workflow_snapshot(c,start.evaluation_id)
+            if any(a.payload.start == start for a in snapshot.attempts):
+                raise V2PersistenceError("Attempt already has an immutable completion")
+            for ref in outputs:
+                output = self._reference(c,ref,start.evaluation_id)
+                expected = {"RESEARCH":ArtifactType.RAW_RESEARCH_REPORT,"COMPARABLE":ArtifactType.RESALE_COMPARABLE,
+                    "ASSESSMENT":ArtifactType.COMPARABLE_ASSESSMENT,"ASSUMPTION":ArtifactType.SCENARIO_ASSUMPTION,
+                    "SCENARIO":ArtifactType.ECONOMIC_SCENARIO,"CALCULATION":ArtifactType.CALCULATION,
+                    "SUMMARY":ArtifactType.EVALUATION_SUMMARY}[original.payload.input_manifest.role]
+                receipt = c.execute("SELECT result_json FROM v2_operations WHERE operation_key=?",
+                    ("workflow-output:" + original.payload.attempt_id,)).fetchone()
+                if receipt is None or Artifact.model_validate_json(receipt[0]) != output or output.artifact_type != expected:
+                    raise V2PersistenceError("Attempt output must match its exact validated output receipt and role")
+                expected_status = (dict(CALCULATED="SUCCEEDED",INSUFFICIENT_INPUTS="CALCULATION_INSUFFICIENT",
+                    INVALID_INPUTS="CALCULATION_INVALID",ERROR="CALCULATION_ERROR")[output.payload.status]
+                    if expected == ArtifactType.CALCULATION else "SUCCEEDED")
+                if status != expected_status:
+                    raise V2PersistenceError("Attempt status must preserve its actual output outcome")
+            now = _now()
+            payload = StepAttempt(**(original.payload.model_dump() | dict(status=status,ended_at=now,start=start,
+                output_references=outputs,failure=failure)))
+            artifact = self._insert_artifact(c,start.evaluation_id,ArtifactType.RESEARCH_ATTEMPT,payload,APPLICATION,
+                (start,*outputs),created_at=now)
+            if failure:
+                self._partial_subject(c,start.evaluation_id,"Workflow attempt failed or was interrupted; evidence preserved.",(artifact.reference,))
+            return artifact
+        return self._once(operation_key,"workflow_attempt_end",{"start":start.model_dump(mode="json"),"status":status,
+            "outputs":[r.model_dump(mode="json") for r in outputs],"failure":failure.model_dump(mode="json") if failure else None},Artifact,perform)
+
+    def end_workflow_run(self, run: ArtifactRef, *, recovered=False, reason, operation_key):
+        run = ArtifactRef.model_validate(run)
+        def perform(c):
+            snapshot = self._workflow_snapshot(c,run.evaluation_id)
+            event = self._typed_reference(c,run,run.evaluation_id,{ArtifactType.WORKFLOW_EVENT})
+            if event not in self._open_workflow_runs(snapshot):
+                raise V2PersistenceError("Run is already closed")
+            attempts = [a for a in snapshot.attempts if a.payload.run == run]
+            starts = [a for a in attempts if a.payload.status == "STARTED"]
+            ends = [a for a in attempts if a.payload.status != "STARTED"]
+            if any(not any(a.payload.start == s.reference for a in ends) for s in starts):
+                raise V2PersistenceError("Cannot end run with ambiguous unfinished attempts")
+            if not recovered and len(starts) != len(event.payload.steps):
+                raise V2PersistenceError("Normal completion requires every explicitly planned step to be attempted")
+            phase = "INTERRUPTED" if recovered else "PARTIAL" if any(a.payload.status != "SUCCEEDED" for a in ends) else "RUNNING"
+            return self._workflow_event(c,run.evaluation_id,event="RECOVERED" if recovered else "RUN_ENDED",
+                phase=phase,limits=event.payload.limits,run=run,attempts=tuple(a.reference for a in ends),reason=reason)
+        return self._once(operation_key,"workflow_run_end",{"run":run.model_dump(mode="json"),
+            "recovered":recovered,"reason":reason},Artifact,perform)
+
+    def report_workflow_interruption(self, run: ArtifactRef, failure: FailureRecord, *, operation_key):
+        run,failure = ArtifactRef.model_validate(run),FailureRecord.model_validate(failure)
+        def perform(c):
+            snapshot = self._workflow_snapshot(c,run.evaluation_id)
+            event = self._typed_reference(c,run,run.evaluation_id,{ArtifactType.WORKFLOW_EVENT})
+            if event not in self._open_workflow_runs(snapshot):
+                raise V2PersistenceError("Interruption reporting requires an unresolved run")
+            artifact = self._workflow_event(c,run.evaluation_id,event="INTERRUPTION_REPORTED",phase="INTERRUPTED",
+                limits=event.payload.limits,run=run,failure=failure,reason="Execution stopped; explicit recovery required.")
+            self._partial_subject(c,run.evaluation_id,"Workflow interruption/failure reported; prior evidence preserved.",(artifact.reference,))
+            return artifact
+        return self._once(operation_key,"workflow_interruption",{"run":run.model_dump(mode="json"),
+            "failure":failure.model_dump(mode="json")},Artifact,perform)
+
+    def begin_workflow_recovery(self, run: ArtifactRef, decision, *, operation_key):
+        run = ArtifactRef.model_validate(run)
+        if decision not in {"RECONCILE","ABANDON"}:
+            raise V2PersistenceError("Explicit recovery decision required")
+        def perform(c):
+            snapshot = self._workflow_snapshot(c,run.evaluation_id)
+            event = self._typed_reference(c,run,run.evaluation_id,{ArtifactType.WORKFLOW_EVENT})
+            if event not in self._open_workflow_runs(snapshot):
+                raise V2PersistenceError("Recovery requires an unresolved run")
+            prior = [e for e in snapshot.events if e.payload.run == run and e.payload.event == "RECOVERY_STARTED"]
+            if prior:
+                raise V2PersistenceError("Recovery already requested; replay its original operation key")
+            return self._workflow_event(c,run.evaluation_id,event="RECOVERY_STARTED",phase="INTERRUPTED",
+                limits=event.payload.limits,run=run,reason="Explicit " + decision + " recovery.")
+        return self._once(operation_key,"workflow_recovery",{"run":run.model_dump(mode="json"),"decision":decision},Artifact,perform)
+
+    def finish_workflow(self, evaluation_id, state: ExecutionState, *, reason, operation_key):
+        state = ExecutionState(state)
+        def perform(c):
+            snapshot = self._workflow_snapshot(c,evaluation_id)
+            if (not snapshot.events or snapshot.evaluation.execution_state != ExecutionState.RUNNING
+                    or self._open_workflow_runs(snapshot) or state == ExecutionState.RUNNING):
+                raise V2PersistenceError("Finish requires a nonterminal initialized workflow without an open run")
+            phase = {ExecutionState.FINISHED:"COMPLETED",ExecutionState.PARTIAL:"PARTIAL",
+                     ExecutionState.FAILED:"FAILED",ExecutionState.CANCELLED:"CANCELLED"}[state]
+            c.execute("UPDATE v2_evaluations SET execution_state=? WHERE evaluation_id=?",(state.value,evaluation_id))
+            event = self._workflow_event(c,evaluation_id,event="FINISHED",phase=phase,
+                limits=snapshot.events[0].payload.limits,reason=reason)
+            if snapshot.evaluation.current_summary != snapshot.evaluation.current_review_subject:
+                self._partial_subject(c,evaluation_id,"Workflow finished; partial evidence remains reviewable.",(event.reference,))
+            else:
+                c.execute("UPDATE v2_evaluations SET updated_at=? WHERE evaluation_id=?",(event.created_at.isoformat(),evaluation_id))
+            return event
+        return self._once(operation_key,"workflow_finish",{"evaluation_id":evaluation_id,"state":state.value,"reason":reason},Artifact,perform)

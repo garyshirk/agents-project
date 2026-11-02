@@ -102,7 +102,7 @@ execution leases; SQLite serialization only protects these recording operations.
 Schema checks validate shape/provenance, not truth of agent/human assertions.
 
 Human decisions always have `ASSESSMENT_ONLY` authority. Follow-up requests are
-stored text. Nothing here researches, calculates, purchases, lists, or resumes work.
+stored text. The human review service never calculates, purchases, lists, or resumes work.
 
 ## Checkpoint 2: comparable evidence and qualitative assessments
 
@@ -261,3 +261,138 @@ initialization, historical rewrite, or V2 runtime orchestration is performed.
 Existing Checkpoint 1/2 JSON remains readable, and earlier qualitative-summary
 idempotency receipts remain replayable. Older code cannot read the new payload
 kinds; no historical artifacts or receipts are rewritten.
+
+# Checkpoint 4: bounded offline evaluation workflow
+
+`OfflineWorkflow` in `workflow.py` connects the existing V2 writers with explicit,
+data-only synthetic fixtures. It is not wired to the terminal application or SDK
+agents. No live research, prompts, tools, scheduler, commercial action, or economic
+decision policy is added. Existing V1C behavior and engine code remain unchanged.
+
+## Entry points and exact context
+
+- `accept(submission, limits, operation_key=...)` atomically creates the existing
+  Opportunity/Evaluation/initial review subject and an ACCEPTED workflow event.
+  It reuses repository acceptance helpers, tables, append-only artifacts, and
+  idempotency receipts. A crash inside acceptance rolls back the whole operation.
+- `run(evaluation_id, steps, operation_key=...)` executes only the explicitly
+  supplied finite batch. Steps have stable IDs, roles, exact context references,
+  context text, and either a synthetic fixture or a calculation scenario reference.
+- `repository.get_workflow(evaluation_id)` returns a consistent read of the
+  Evaluation, workflow events, and attempts, with `unresolved_runs` and
+  `unfinished_attempts`. It does not select another/latest Evaluation.
+- `finish(evaluation_id, state, reason=..., operation_key=...)` explicitly records
+  FINISHED, PARTIAL, FAILED, or CANCELLED in the existing execution-state vocabulary.
+  It cannot finish an open run or resume a terminal Evaluation. A new linked
+  Evaluation may be explicitly created using the earlier repository API and
+  explicitly initialized with `initialize_workflow`; no automatic restoration.
+
+Batches can be incremental. For example, record research, then supply a new batch
+whose fixtures cite those exact returned artifacts. There are no symbolic latest
+aliases, implicit dependency selection, or automatic downstream step generation.
+A batch requiring outputs that do not yet exist must be supplied in later explicit
+calls after those references are known. The original submission, Evaluation and
+Opportunity IDs, exact context refs/text, and exact fixture bytes are durably stored
+in each invocation manifest before execution.
+
+Meaningful specialist roles are RESEARCH, COMPARABLE, ASSESSMENT, ASSUMPTION,
+SCENARIO, and SUMMARY. CALCULATION is application-owned and has no specialist.
+`OfflineFixture` is explicitly SYNTHETIC_OFFLINE with a stable fixture ID and
+response JSON; `invoke_offline_fixture` only parses those supplied bytes. Typed
+responses carry matching ownership and one role-specific draft or a structured
+specialist-returned failure. No callable, database handle, review service, or
+external tool is passed to the adapter. All nested output references must appear
+in the manifest and belong to the selected Evaluation. Fabricated refs and
+cross-Evaluation substitutions are rejected. Comparable fixtures must declare
+SYNTHETIC_FIXTURE capture. Persisted outputs have synthetic application attribution.
+Fixtures are attributed assertions, never independently verified research.
+
+## Durable progress and bounds
+
+All four limits are mandatory positive integers: maximum specialist invocations,
+maximum attempts per step, maximum distinct workflow steps, and maximum calculation
+attempts. They apply cumulatively to this Evaluation and survive restarts. Durable
+STARTED records consume the relevant budget conservatively even if a crash occurs
+before the actual invocation. Step and attempt counts are checked before a batch
+is claimed. No automatic retries or loops beyond the supplied finite batch exist.
+
+The existing Evaluation stays RUNNING while its workflow may be ACCEPTED, RUNNING,
+PARTIAL, or INTERRUPTED/awaiting recovery. This permits explicit bounded continuation
+without weakening the earlier terminal-state contract. Explicit finish maps to
+FINISHED/COMPLETED, PARTIAL, FAILED, or CANCELLED. These progress phases are not
+economic-quality or human-review decisions. FINISHED does not mean profitable,
+well-supported, or commercially authorized, and no summary is invented to finish.
+
+Workflow events and STARTED/completion attempt artifacts use the existing V2
+artifact store. Attempts preserve application IDs, start/end timestamps, exact
+input manifests, producer, output refs, and failure details. Outcomes distinguish
+SUCCEEDED, SPECIALIST_FAILURE, INVALID_OUTPUT, PERSISTENCE_FAILURE,
+COORDINATOR_ERROR, INTERRUPTED, CALCULATION_INSUFFICIENT, CALCULATION_INVALID, and
+CALCULATION_ERROR. Existing calculation artifacts retain their separate statuses.
+Invalid or failed steps do not fabricate accepted output artifacts. Earlier output
+and valid published summaries survive later failures. Calculation/summary writers
+remain the sole validated persistence paths for those outputs.
+
+## Restart and recovery
+
+A RUN_STARTED record claims the batch before any invocation. Only its original
+application token may dispatch it; concurrent or restarted same-key callers cannot
+silently dispatch again. A completed same-key request returns its original end
+record. Different request content with the same key conflicts. Exact output
+operation receipts bind accepted output artifacts to their original attempt.
+
+Caught interruptions/unexpected execution errors receive best-effort immutable
+interruption reports. Hard process termination cannot write a report: its unresolved
+run/STARTED attempt is the durable signal of ambiguity, not proof the specialist
+was never called. If storage is unavailable, errors propagate without a claim that
+diagnostics were durably recorded. Reviewers can inspect the existing evidence.
+
+After ensuring the original process has stopped, a trusted caller may explicitly
+call `recover(run_start_ref, decision="RECONCILE" or "ABANDON", operation_key=...)`.
+The decision is persisted before reconciliation. Recovery itself is idempotent and
+restartable with its original key; changing its decision conflicts. It never
+invokes a specialist, republishes a summary, or reruns arithmetic.
+
+- A durable output receipt is reconciled to its exact attempt and actual result.
+  Even ABANDON cannot erase or pretend an already committed output did not happen.
+- No output receipt means the attempt becomes INTERRUPTED with explicit uncertainty,
+  not a fabricated success. Unstarted planned steps remain visible in the original
+  run plan; no new attempt/output is invented for them.
+- After recovery closes the old run, the caller may submit a new bounded batch.
+  Retrying an unsuccessful step requires `retry_of` pointing to its latest terminal
+  attempt and preserves the role. Successful steps cannot be retried as failures;
+  a genuinely new research action needs its own explicit step ID. Limits still apply.
+
+Output persistence and attempt completion deliberately have separate receipts.
+This makes crashes after output persistence, calculation, or summary publication
+reconcilable without duplication. Each individual writer/receipt/review-subject
+update is transactional. Persistence failures abort the batch; remaining steps are
+not invoked. Any ambiguous run must be explicitly recovered before continuation.
+
+This is a trusted, single-controller offline workflow, not distributed execution
+infrastructure. The token prevents duplicate same-key dispatch but is not a worker
+lease or authentication mechanism. Recovery must not race a still-running original
+process. No exactly-once external-side-effect guarantee is claimed; future live
+adapters require a separately scoped cancellation/idempotency/recovery design.
+
+## Economics and human review
+
+Only explicitly authored, persisted scenarios reach the existing calculation API.
+No comparable scores, assumptions, resale prices, assessment states, or summaries
+are inferred. A supplied summary is validated and published; an invalid one leaves
+the previous valid summary intact. An authored insufficient-information summary can
+be published even after research failure. Weak or nonmeaningful comparable judgments
+are preserved and never used as automatic eligibility filters.
+
+Accepted outputs use the earlier review-currentness rules. Failures and interruption
+reports also create new partial review subjects. Bookkeeping starts/completions alone
+do not replace a published economic summary. Every accepted Evaluation remains in
+the unfiltered queue, including incomplete, failed, interrupted, insufficient,
+unattractive, and already human-reviewed Evaluations. Human decisions remain in the
+separate review service and cannot trigger workflow or commercial actions.
+
+Tests use fictional fixtures and temporary databases, including complete/conditional,
+partial failure, insufficient/invalid/error economics, invalid ownership, restart,
+interruption at persistence boundaries, concurrency, rollback, and bounded retries.
+No production migration or real database initialization is performed. Earlier V2
+payloads remain readable; older code cannot read these new workflow payload kinds.

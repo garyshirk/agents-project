@@ -543,6 +543,118 @@ class CalculationRecord(CalculationOutcome):
     created_at: AwareDatetime
 
 
+class WorkflowLimits(Contract):
+    max_specialist_invocations: int = Field(ge=1, strict=True)
+    max_attempts_per_step: int = Field(ge=1, strict=True)
+    max_workflow_steps: int = Field(ge=1, strict=True)
+    max_calculation_attempts: int = Field(ge=1, strict=True)
+
+
+StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY"]
+
+
+class OfflineFixture(Contract):
+    attribution: Literal["SYNTHETIC_OFFLINE"] = "SYNTHETIC_OFFLINE"
+    fixture_id: Text
+    # Untrusted fixture bytes are parsed only after a durable invocation start.
+    response_json: str
+
+
+class WorkflowStep(Contract):
+    step_id: Text
+    role: StepRole
+    context_references: tuple[ArtifactRef, ...]
+    context_text: str
+    fixture: OfflineFixture | None = None
+    scenario: ArtifactRef | None = None
+    retry_of: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def correct_boundary(self):
+        if self.role == "CALCULATION":
+            if self.fixture is not None or self.scenario is None or self.scenario not in self.context_references:
+                raise ValueError("calculation requires an exact context scenario and no specialist fixture")
+        elif self.fixture is None or self.scenario is not None:
+            raise ValueError("specialist steps require an explicit offline fixture, not calculation authority")
+        if len(self.context_references) != len(set(self.context_references)):
+            raise ValueError("duplicate input context references")
+        return self
+
+
+class StepInputManifest(Contract):
+    opportunity_id: Text
+    evaluation_id: Text
+    step_id: Text
+    role: StepRole
+    submission: OpportunitySubmission
+    context_references: tuple[ArtifactRef, ...]
+    context_text: str
+    fixture: OfflineFixture | None
+    scenario: ArtifactRef | None
+
+
+class WorkflowEvent(Contract):
+    schema_version: Literal["v2-workflow-event-v1"] = "v2-workflow-event-v1"
+    opportunity_id: Text
+    evaluation_id: Text
+    phase: Literal["ACCEPTED", "RUNNING", "PARTIAL", "INTERRUPTED", "COMPLETED", "FAILED", "CANCELLED"]
+    event: Literal["INITIALIZED", "RUN_STARTED", "RUN_ENDED", "INTERRUPTION_REPORTED", "RECOVERY_STARTED", "RECOVERED", "FINISHED"]
+    limits: WorkflowLimits
+    run: ArtifactRef | None = None
+    owner_token: Text | None = None
+    steps: tuple[WorkflowStep, ...] = ()
+    attempt_references: tuple[ArtifactRef, ...] = ()
+    reason: Text
+    failure: FailureRecord | None = None
+
+    @model_validator(mode="after")
+    def validate_event(self):
+        if self.event == "RUN_STARTED":
+            if self.owner_token is None or self.run is not None or not self.steps or self.phase != "RUNNING":
+                raise ValueError("run start requires application claim and explicit bounded plan")
+        elif self.owner_token is not None or self.steps:
+            raise ValueError("only run starts carry an invocation claim/plan")
+        if self.event in {"RUN_ENDED","INTERRUPTION_REPORTED","RECOVERY_STARTED","RECOVERED"} and self.run is None:
+            raise ValueError("run event requires its exact start reference")
+        for ref in (*((self.run,) if self.run else ()), *self.attempt_references):
+            if ref.evaluation_id != self.evaluation_id or ref.opportunity_id != self.opportunity_id:
+                raise ValueError("workflow event references must have exact ownership")
+        return self
+
+
+AttemptStatus = Literal["STARTED", "SUCCEEDED", "SPECIALIST_FAILURE", "INVALID_OUTPUT", "PERSISTENCE_FAILURE",
+                        "COORDINATOR_ERROR", "INTERRUPTED", "CALCULATION_INSUFFICIENT", "CALCULATION_INVALID", "CALCULATION_ERROR"]
+
+
+class StepAttempt(Contract):
+    schema_version: Literal["v2-step-attempt-v1"] = "v2-step-attempt-v1"
+    attempt_id: Text
+    attempt_number: int = Field(ge=1)
+    run: ArtifactRef
+    input_manifest: StepInputManifest
+    status: AttemptStatus
+    started_at: AwareDatetime
+    ended_at: AwareDatetime | None = None
+    start: ArtifactRef | None = None
+    output_references: tuple[ArtifactRef, ...] = ()
+    failure: FailureRecord | None = None
+
+    @model_validator(mode="after")
+    def complete_attempt(self):
+        if self.status == "STARTED":
+            if self.ended_at is not None or self.start is not None or self.output_references or self.failure:
+                raise ValueError("started attempts cannot claim completion or output")
+        else:
+            if self.ended_at is None or self.start is None or self.ended_at < self.started_at:
+                raise ValueError("terminal attempt requires original start and completion timestamp")
+            if self.status in {"SUCCEEDED", "CALCULATION_INSUFFICIENT", "CALCULATION_INVALID", "CALCULATION_ERROR"}:
+                if len(self.output_references) != 1 or self.failure is not None:
+                    raise ValueError("accepted invocation requires one exact output artifact")
+            elif self.failure is None or self.output_references:
+                raise ValueError("failed/interrupted invocation requires failure information, not successful outputs")
+        return self
+
+
 class ArtifactType(str, Enum):
     REVIEW_SUBJECT = "REVIEW_SUBJECT"
     FAILURE = "FAILURE"
@@ -556,11 +668,13 @@ class ArtifactType(str, Enum):
     ECONOMIC_FINDINGS = "ECONOMIC_FINDINGS"
     CALCULATION = "CALCULATION"
     ECONOMIC_SCENARIO = "ECONOMIC_SCENARIO"
+    WORKFLOW_EVENT = "WORKFLOW_EVENT"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
-    | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord,
+    | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord
+    | WorkflowEvent | StepAttempt,
     Field(discriminator="schema_version"),
 ]
 
@@ -586,6 +700,8 @@ class Artifact(Contract):
             ArtifactType.COMPARABLE_ASSESSMENT: ComparableAssessment,
             ArtifactType.ECONOMIC_SCENARIO: EconomicScenario,
             ArtifactType.CALCULATION: CalculationRecord,
+            ArtifactType.WORKFLOW_EVENT: WorkflowEvent,
+            ArtifactType.RESEARCH_ATTEMPT: StepAttempt,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -617,6 +733,10 @@ class Artifact(Contract):
                 if (ref.evaluation_id != self.reference.evaluation_id or ref.opportunity_id != self.reference.opportunity_id
                         or ref.sequence >= self.reference.sequence):
                     raise ValueError("calculation must reference earlier scenario in this Evaluation")
+        if isinstance(self.payload, (WorkflowEvent, StepAttempt)):
+            owner = self.payload.input_manifest if isinstance(self.payload, StepAttempt) else self.payload
+            if (owner.evaluation_id != self.reference.evaluation_id or owner.opportunity_id != self.reference.opportunity_id):
+                raise ValueError("workflow artifact ownership mismatch")
         return self
 
 
@@ -672,3 +792,19 @@ class AssessmentRevisionStatus(Contract):
 class ReviewEvidenceSnapshot(Contract):
     evaluation: Evaluation
     artifacts: tuple[Artifact, ...]
+
+
+class WorkflowSnapshot(Contract):
+    evaluation: Evaluation
+    events: tuple[Artifact, ...]
+    attempts: tuple[Artifact, ...]
+
+    @property
+    def unresolved_runs(self):
+        closed = {e.payload.run for e in self.events if e.payload.event in {"RUN_ENDED","RECOVERED"}}
+        return tuple(e.reference for e in self.events if e.payload.event == "RUN_STARTED" and e.reference not in closed)
+
+    @property
+    def unfinished_attempts(self):
+        ended = {a.payload.start for a in self.attempts if a.payload.start}
+        return tuple(a.reference for a in self.attempts if a.payload.status == "STARTED" and a.reference not in ended)
