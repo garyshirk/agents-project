@@ -30,6 +30,10 @@ class HumanReviewService:
     def get_review_history(self, evaluation_id):
         return self.repository.list_reviews(evaluation_id)
 
+    def get_evidence(self, evaluation_id):
+        """All evidence, failures, and historical judgments; no category filtering."""
+        return self.repository.get_review_evidence(evaluation_id)
+
     def review_status(self, evaluation_id):
         return self.repository.review_status(evaluation_id)
 

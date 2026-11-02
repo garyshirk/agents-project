@@ -2,6 +2,7 @@
 
 from enum import Enum
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -223,6 +224,175 @@ class AssumptionRecord(Contract):
     assumption: EconomicAssumption
 
 
+class ProductAttribute(Contract):
+    name: Text
+    value: Text | None = None
+
+
+class ComparableProduct(Contract):
+    description: Text
+    brand: Text | None = None
+    model_identifiers: tuple[ProductAttribute, ...] = ()
+    variant_attributes: tuple[ProductAttribute, ...] = ()
+    condition: Text | None = None
+    packaging: Text | None = None
+    package_quantity: int | None = Field(default=None, ge=1)
+    bundle_contents: tuple[Text, ...] = ()
+    other_attributes: tuple[ProductAttribute, ...] = ()
+
+
+class AttributeComparison(Contract):
+    attribute: Text
+    candidate_value: Text | None = None
+    comparable_value: Text | None = None
+    relation: Literal["SIMILARITY", "KNOWN_DIFFERENCE", "UNRESOLVED"]
+    explanation: Text
+
+
+class PriceEvidenceType(str, Enum):
+    COMPLETED_SALE = "COMPLETED_SALE"
+    ACTIVE_ASK = "ACTIVE_ASK"
+    PUBLISHED_REFERENCE = "PUBLISHED_REFERENCE"
+    HUMAN_REPORTED = "HUMAN_REPORTED"
+    OTHER_QUALIFIED = "OTHER_QUALIFIED"
+
+
+class PriceEvidence(Contract):
+    evidence_type: PriceEvidenceType
+    amount: NonNegativeDecimalString | None = None
+    currency: str | None = None
+    quantity_or_unit_basis: Text | None = None
+    shipping_treatment: Literal["INCLUDED", "EXCLUDED", "UNKNOWN", "NOT_APPLICABLE"] = "UNKNOWN"
+    shipping_amount: NonNegativeDecimalString | None = None
+    marketplace_or_channel: Text | None = None
+    transaction_at: AwareDatetime | None = None
+    completion_basis: Text | None = None
+    realized_price_basis: Text | None = None
+    context: tuple[Text, ...] = ()
+
+    @model_validator(mode="after")
+    def preserve_evidence_type(self):
+        if self.currency is not None and (len(self.currency) != 3 or not self.currency.isascii()
+                                        or not self.currency.isalpha() or not self.currency.isupper()):
+            raise ValueError("currency must be an explicit three-letter uppercase code")
+        if (self.amount is not None or self.shipping_amount is not None) and self.currency is None:
+            raise ValueError("a numerical price or shipping amount requires currency")
+        if self.evidence_type == PriceEvidenceType.COMPLETED_SALE:
+            if not self.completion_basis or (self.amount is not None and not self.realized_price_basis):
+                raise ValueError("completed-sale claims require completion support and, for a price, realized-price support")
+        elif any(value is not None for value in (self.completion_basis, self.realized_price_basis)):
+            raise ValueError("non-transaction price evidence must not carry realized-sale assertions")
+        if (self.transaction_at is not None and self.evidence_type in {
+                PriceEvidenceType.ACTIVE_ASK, PriceEvidenceType.PUBLISHED_REFERENCE}):
+            raise ValueError("asking/reference evidence must not assert a transaction date")
+        return self
+
+
+class ComparableSource(Contract):
+    source_category: Literal["MARKETPLACE", "RETAILER", "MANUFACTURER", "PRICE_GUIDANCE", "HUMAN", "OTHER", "UNKNOWN"]
+    source_name: Text | None = None
+    seller_name: Text | None = None
+    url: Text | None = None
+    other_reference: Text | None = None
+    capture_method: Literal["PUBLIC_WEB_REPORT", "HUMAN_REPORT", "SYNTHETIC_FIXTURE", "OTHER"]
+    observed_at: AwareDatetime | None = None
+    raw_artifact_references: tuple[ArtifactRef, ...] = ()
+    limitations: tuple[Text, ...] = ()
+    application_verified: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_url_shape_only(self):
+        if self.url is not None:
+            try:
+                parsed = urlsplit(self.url)
+                parsed.port
+                valid = (parsed.scheme in {"https", "http"} and parsed.hostname
+                         and not parsed.username and not parsed.password
+                         and not any(char.isspace() for char in self.url))
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("source URL must be an HTTP(S) URL without credentials; shape is not verification")
+        return self
+
+
+class RawResearchReport(Contract):
+    schema_version: Literal["v2-raw-report-v1"] = "v2-raw-report-v1"
+    report_text: str = Field(min_length=1)
+    limitations: tuple[Text, ...] = ()
+
+    @model_validator(mode="after")
+    def preserve_raw_text(self):
+        if not self.report_text.strip():
+            raise ValueError("raw report must not be blank")
+        return self
+
+
+class ComparableDraft(Contract):
+    product: ComparableProduct
+    price_evidence: PriceEvidence
+    source: ComparableSource
+    product_comparisons: tuple[AttributeComparison, ...] = ()
+    limitations: tuple[Text, ...] = ()
+
+
+class ResaleComparable(ComparableDraft):
+    schema_version: Literal["v2-comparable-v1"] = "v2-comparable-v1"
+    comparable_id: Text
+    opportunity_id: Text
+    evaluation_id: Text
+    revision: int = Field(ge=1)
+    supersedes: ArtifactRef | None = None
+    captured_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def revision_requires_predecessor(self):
+        if (self.revision == 1) != (self.supersedes is None):
+            raise ValueError("comparable revision must have the appropriate predecessor")
+        return self
+
+
+class ComparabilityCategory(str, Enum):
+    EXACT_OR_STRONGLY_SUPPORTED = "EXACT_OR_STRONGLY_SUPPORTED"
+    CLOSE_WITH_KNOWN_DIFFERENCES = "CLOSE_WITH_KNOWN_DIFFERENCES"
+    WEAK = "WEAK"
+    NOT_MEANINGFULLY_COMPARABLE = "NOT_MEANINGFULLY_COMPARABLE"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+class AssessmentDraft(Contract):
+    candidate_context: ArtifactRef
+    candidate_identity: ComparableProduct
+    category: ComparabilityCategory
+    explanation: Text
+    product_comparisons: tuple[AttributeComparison, ...] = ()
+    material_known_differences: tuple[Text, ...] = ()
+    unresolved_questions: tuple[Text, ...] = ()
+    evidence_references: tuple[ArtifactRef, ...] = ()
+    provenance: Provenance
+    policy_version: Text
+
+
+class ComparableAssessment(AssessmentDraft):
+    schema_version: Literal["v2-comparable-assessment-v1"] = "v2-comparable-assessment-v1"
+    assessment_id: Text
+    comparable: ArtifactRef
+    opportunity_id: Text
+    evaluation_id: Text
+    revision: int = Field(ge=1)
+    supersedes: ArtifactRef | None = None
+    assessed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_binding(self):
+        if (self.revision == 1) != (self.supersedes is None):
+            raise ValueError("assessment revision must have the appropriate predecessor")
+        for reference in (self.comparable, self.candidate_context, *self.evidence_references):
+            if reference.evaluation_id != self.evaluation_id or reference.opportunity_id != self.opportunity_id:
+                raise ValueError("assessment references must belong to this exact Evaluation")
+        return self
+
+
 class ArtifactType(str, Enum):
     REVIEW_SUBJECT = "REVIEW_SUBJECT"
     FAILURE = "FAILURE"
@@ -238,7 +408,8 @@ class ArtifactType(str, Enum):
 
 
 Payload = Annotated[
-    PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord,
+    PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
+    | RawResearchReport | ResaleComparable | ComparableAssessment,
     Field(discriminator="schema_version"),
 ]
 
@@ -259,6 +430,9 @@ class Artifact(Contract):
             ArtifactType.FAILURE: FailureRecord,
             ArtifactType.EVALUATION_SUMMARY: EconomicAssessmentSummary,
             ArtifactType.SCENARIO_ASSUMPTION: AssumptionRecord,
+            ArtifactType.RAW_RESEARCH_REPORT: RawResearchReport,
+            ArtifactType.RESALE_COMPARABLE: ResaleComparable,
+            ArtifactType.COMPARABLE_ASSESSMENT: ComparableAssessment,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -272,6 +446,13 @@ class Artifact(Contract):
             raise ValueError("artifact parents/predecessors must be earlier records of this exact Evaluation")
         if isinstance(self.payload, PartialReviewSubject) and self.payload.covered_through_sequence != self.reference.sequence - 1:
             raise ValueError("partial review subject must cover the actual preceding artifact sequence")
+        if isinstance(self.payload, (ResaleComparable, ComparableAssessment)):
+            if (self.payload.evaluation_id != self.reference.evaluation_id
+                    or self.payload.opportunity_id != self.reference.opportunity_id):
+                raise ValueError("comparable/assessment envelope ownership mismatch")
+            timestamp = self.payload.captured_at if isinstance(self.payload, ResaleComparable) else self.payload.assessed_at
+            if timestamp != self.created_at:
+                raise ValueError("capture/assessment timestamp must be application-owned artifact time")
         return self
 
 
@@ -315,3 +496,15 @@ class ReviewQueuePage(Contract):
 class AcceptedEvaluation(Contract):
     opportunity: Opportunity
     evaluation: Evaluation
+
+
+class AssessmentRevisionStatus(Contract):
+    artifact: Artifact
+    latest_assessment_revision: bool
+    current_comparable_revision: bool
+    is_current: bool
+
+
+class ReviewEvidenceSnapshot(Contract):
+    evaluation: Evaluation
+    artifacts: tuple[Artifact, ...]

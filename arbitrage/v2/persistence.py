@@ -14,6 +14,8 @@ from arbitrage.v2.contracts import (
     HumanActor, HumanReviewDecision, KnowledgeSource, Opportunity,
     OpportunitySubmission, PartialReviewSubject, Producer, ReviewDecision,
     ReviewQueueEntry, ReviewQueuePage, SummaryDraft,
+    AssessmentDraft, AssessmentRevisionStatus, ComparableAssessment, ComparableDraft,
+    RawResearchReport, ResaleComparable, ReviewEvidenceSnapshot,
 )
 
 
@@ -173,7 +175,7 @@ class V2Repository:
             if historical == (support.artifact.evaluation_id == evaluation_id):
                 raise V2PersistenceError("Historical references require another Evaluation; current/human evidence requires this Evaluation")
 
-    def _insert_artifact(self, c, evaluation_id, kind, payload, producer, parents=(), identifier=None):
+    def _insert_artifact(self, c, evaluation_id, kind, payload, producer, parents=(), identifier=None, created_at=None):
         row = self._row(c, "v2_evaluations", "evaluation_id", evaluation_id)
         if len(parents) != len(set(parents)):
             raise V2PersistenceError("Duplicate parent references")
@@ -182,7 +184,7 @@ class V2Repository:
         sequence = c.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM v2_artifacts WHERE evaluation_id=?", (evaluation_id,)).fetchone()[0]
         artifact = Artifact(reference=ArtifactRef(opportunity_id=row["opportunity_id"],
             evaluation_id=evaluation_id, artifact_id=identifier or str(uuid4()), sequence=sequence),
-            artifact_type=kind, payload=payload, producer=producer, parent_references=parents, created_at=_now())
+            artifact_type=kind, payload=payload, producer=producer, parent_references=parents, created_at=created_at or _now())
         c.execute("INSERT INTO v2_artifacts VALUES (?,?,?,?,?,?,?,?)", (
             artifact.reference.artifact_id, evaluation_id, sequence, kind.value, payload.model_dump_json(),
             producer.model_dump_json(), _json([p.model_dump(mode="json") for p in parents]), artifact.created_at.isoformat()))
@@ -241,13 +243,15 @@ class V2Repository:
             return self._evaluation(c, evaluation_id)
         return self._once(operation_key, "state", {"evaluation_id": evaluation_id, "state": state.value}, Evaluation, perform)
 
-    def record_artifact(self, evaluation_id: str, payload: FailureRecord | AssumptionRecord, *,
+    def record_artifact(self, evaluation_id: str, payload: FailureRecord | AssumptionRecord | RawResearchReport, *,
                         producer: Producer, parents: tuple[ArtifactRef, ...] = (), operation_key: str) -> Artifact:
-        if not isinstance(payload, (FailureRecord, AssumptionRecord)):
-            raise V2PersistenceError("Only validated checkpoint-1 failure/assumption payloads are supported here")
+        if not isinstance(payload, (FailureRecord, AssumptionRecord, RawResearchReport)):
+            raise V2PersistenceError("Only validated failure, assumption, or raw-report payloads are supported here")
+        payload = type(payload).model_validate(payload)
         producer = Producer.model_validate(producer)
         parents = tuple(ArtifactRef.model_validate(p) for p in parents)
-        kind = ArtifactType.FAILURE if isinstance(payload, FailureRecord) else ArtifactType.SCENARIO_ASSUMPTION
+        kind = (ArtifactType.FAILURE if isinstance(payload, FailureRecord) else
+                ArtifactType.SCENARIO_ASSUMPTION if isinstance(payload, AssumptionRecord) else ArtifactType.RAW_RESEARCH_REPORT)
         def perform(c):
             if isinstance(payload, AssumptionRecord):
                 self._validate_provenance(c, payload.assumption.provenance, evaluation_id)
@@ -379,3 +383,135 @@ class V2Repository:
             total = c.execute("SELECT COUNT(*) FROM v2_evaluations").fetchone()[0]
             rows = c.execute("SELECT evaluation_id FROM v2_evaluations ORDER BY created_at,evaluation_id LIMIT ? OFFSET ?", (limit, offset)).fetchall()
             return ReviewQueuePage(entries=tuple(self._queue_entry(c, row[0]) for row in rows), total=total, limit=limit, offset=offset)
+
+    def _typed_reference(self, c, reference, evaluation_id, kinds):
+        artifact = self._reference(c, reference, evaluation_id)
+        if artifact.artifact_type not in kinds:
+            raise V2PersistenceError("Referenced artifact has an incorrect evidence type")
+        return artifact
+
+    def _evidence_history(self, c, evaluation_id, kind):
+        self._evaluation(c, evaluation_id)
+        rows = c.execute("SELECT artifact_id FROM v2_artifacts WHERE evaluation_id=? AND artifact_type=? ORDER BY sequence",
+                         (evaluation_id, kind.value)).fetchall()
+        return tuple(self._artifact(c, row[0]) for row in rows)
+
+    def _current_lineage(self, c, evaluation_id, identifier, kind, identity_field):
+        history = self._evidence_history(c, evaluation_id, kind)
+        matches = [a for a in history if getattr(a.payload, identity_field) == identifier]
+        if not matches:
+            raise V2PersistenceError("Evidence lineage does not exist in this Evaluation")
+        return matches[-1]
+
+    def record_comparable(self, evaluation_id, draft: ComparableDraft, *, producer: Producer,
+                          operation_key: str, parents=(), predecessor: ArtifactRef | None = None):
+        """Initial identity and later immutable revisions share this atomic writer."""
+        draft, producer = ComparableDraft.model_validate(draft), Producer.model_validate(producer)
+        parents = tuple(ArtifactRef.model_validate(p) for p in parents)
+        predecessor = ArtifactRef.model_validate(predecessor) if predecessor else None
+        def perform(c):
+            evaluation = self._evaluation(c, evaluation_id)
+            old = self._typed_reference(c, predecessor, evaluation_id, {ArtifactType.RESALE_COMPARABLE}) if predecessor else None
+            if old and self._current_lineage(c, evaluation_id, old.payload.comparable_id,
+                    ArtifactType.RESALE_COMPARABLE, "comparable_id").reference != predecessor:
+                raise V2PersistenceError("Comparable revision requires the latest predecessor; branching is refused")
+            for raw in draft.source.raw_artifact_references:
+                self._typed_reference(c, raw, evaluation_id, {ArtifactType.RAW_RESEARCH_REPORT})
+            now = _now()
+            payload = ResaleComparable(**draft.model_dump(), comparable_id=old.payload.comparable_id if old else str(uuid4()),
+                opportunity_id=evaluation.opportunity_id, evaluation_id=evaluation_id, revision=old.payload.revision+1 if old else 1,
+                supersedes=predecessor, captured_at=now)
+            # Explicit caller parents are still validated (including duplicates).
+            if len(parents) != len(set(parents)):
+                raise V2PersistenceError("Duplicate parent references")
+            references = tuple(dict.fromkeys((*parents, *draft.source.raw_artifact_references,
+                                             *((predecessor,) if predecessor else ()))))
+            artifact = self._insert_artifact(c, evaluation_id, ArtifactType.RESALE_COMPARABLE, payload, producer,
+                                             references, created_at=now)
+            self._partial_subject(c, evaluation_id, "New comparable evidence; prior reviews do not cover this revision.", (artifact.reference,))
+            return artifact
+        return self._once(operation_key, "comparable", {"evaluation_id":evaluation_id, "draft":draft.model_dump(mode="json"),
+            "producer":producer.model_dump(mode="json"), "parents":[p.model_dump(mode="json") for p in parents],
+            "predecessor":predecessor.model_dump(mode="json") if predecessor else None}, Artifact, perform)
+
+    def record_comparable_revision(self, previous: ArtifactRef, draft: ComparableDraft, **options):
+        previous = ArtifactRef.model_validate(previous)
+        return self.record_comparable(previous.evaluation_id, draft, predecessor=previous, **options)
+
+    def record_assessment(self, evaluation_id, comparable: ArtifactRef, draft: AssessmentDraft, *,
+                          producer: Producer, operation_key: str, parents=(), predecessor: ArtifactRef | None = None):
+        comparable, draft, producer = ArtifactRef.model_validate(comparable), AssessmentDraft.model_validate(draft), Producer.model_validate(producer)
+        parents = tuple(ArtifactRef.model_validate(p) for p in parents)
+        predecessor = ArtifactRef.model_validate(predecessor) if predecessor else None
+        def perform(c):
+            target = self._typed_reference(c, comparable, evaluation_id, {ArtifactType.RESALE_COMPARABLE})
+            self._typed_reference(c, draft.candidate_context, evaluation_id, {ArtifactType.REVIEW_SUBJECT, ArtifactType.EVALUATION_SUMMARY})
+            for ref in draft.evidence_references:
+                self._typed_reference(c, ref, evaluation_id, {ArtifactType.RAW_RESEARCH_REPORT, ArtifactType.RESALE_COMPARABLE})
+            for support in draft.provenance.supporting_records:
+                self._reference(c, support.artifact, evaluation_id)
+            self._validate_provenance(c, draft.provenance, evaluation_id)
+            old = self._typed_reference(c, predecessor, evaluation_id, {ArtifactType.COMPARABLE_ASSESSMENT}) if predecessor else None
+            if old:
+                old_target = self._typed_reference(c, old.payload.comparable, evaluation_id, {ArtifactType.RESALE_COMPARABLE})
+                if old_target.payload.comparable_id != target.payload.comparable_id:
+                    raise V2PersistenceError("An assessment lineage cannot change comparable identity")
+                if self._current_lineage(c, evaluation_id, old.payload.assessment_id,
+                        ArtifactType.COMPARABLE_ASSESSMENT, "assessment_id").reference != predecessor:
+                    raise V2PersistenceError("Assessment revision requires the latest predecessor")
+            now = _now()
+            payload = ComparableAssessment(**draft.model_dump(), assessment_id=old.payload.assessment_id if old else str(uuid4()),
+                comparable=comparable, opportunity_id=target.reference.opportunity_id, evaluation_id=evaluation_id,
+                revision=old.payload.revision+1 if old else 1, supersedes=predecessor, assessed_at=now)
+            if len(parents) != len(set(parents)):
+                raise V2PersistenceError("Duplicate parent references")
+            refs = tuple(dict.fromkeys((*parents, comparable, draft.candidate_context, *draft.evidence_references,
+                                       *(s.artifact for s in draft.provenance.supporting_records), *((predecessor,) if predecessor else ()))))
+            artifact = self._insert_artifact(c, evaluation_id, ArtifactType.COMPARABLE_ASSESSMENT, payload, producer, refs, created_at=now)
+            self._partial_subject(c, evaluation_id, "New attributed comparable assessment; no economic state inferred.", (artifact.reference,))
+            return artifact
+        return self._once(operation_key, "assessment", {"evaluation_id":evaluation_id,"comparable":comparable.model_dump(mode="json"),
+            "draft":draft.model_dump(mode="json"),"producer":producer.model_dump(mode="json"),
+            "parents":[p.model_dump(mode="json") for p in parents], "predecessor":predecessor.model_dump(mode="json") if predecessor else None}, Artifact, perform)
+
+    def record_assessment_revision(self, previous: ArtifactRef, comparable: ArtifactRef, draft: AssessmentDraft, **options):
+        previous = ArtifactRef.model_validate(previous)
+        return self.record_assessment(previous.evaluation_id, comparable, draft, predecessor=previous, **options)
+
+    def list_comparable_history(self, evaluation_id):
+        with self._connection() as c:
+            return self._evidence_history(c, evaluation_id, ArtifactType.RESALE_COMPARABLE)
+
+    def get_comparable(self, reference: ArtifactRef):
+        reference = ArtifactRef.model_validate(reference)
+        with self._connection() as c:
+            return self._typed_reference(c, reference, reference.evaluation_id, {ArtifactType.RESALE_COMPARABLE})
+
+    def get_current_comparable(self, evaluation_id, comparable_id):
+        with self._connection() as c:
+            return self._current_lineage(c, evaluation_id, comparable_id, ArtifactType.RESALE_COMPARABLE, "comparable_id")
+
+    def _assessment_history(self, c, evaluation_id, comparable_id):
+        current = self._current_lineage(c, evaluation_id, comparable_id, ArtifactType.RESALE_COMPARABLE, "comparable_id")
+        assessments = self._evidence_history(c, evaluation_id, ArtifactType.COMPARABLE_ASSESSMENT)
+        relevant = [a for a in assessments if self._typed_reference(c, a.payload.comparable, evaluation_id,
+                    {ArtifactType.RESALE_COMPARABLE}).payload.comparable_id == comparable_id]
+        latest = {a.payload.assessment_id:a.reference for a in relevant}
+        return tuple(AssessmentRevisionStatus(artifact=a,
+            latest_assessment_revision=latest[a.payload.assessment_id] == a.reference,
+            current_comparable_revision=a.payload.comparable == current.reference,
+            is_current=latest[a.payload.assessment_id] == a.reference and a.payload.comparable == current.reference) for a in relevant)
+
+    def list_assessment_history(self, evaluation_id, comparable_id):
+        with self._connection() as c:
+            return self._assessment_history(c, evaluation_id, comparable_id)
+
+    def get_current_assessments(self, evaluation_id, comparable_id):
+        with self._connection() as c:
+            return tuple(a for a in self._assessment_history(c, evaluation_id, comparable_id) if a.is_current)
+
+    def get_review_evidence(self, evaluation_id):
+        with self._connection() as c:
+            evaluation = self._evaluation(c, evaluation_id)
+            rows = c.execute("SELECT artifact_id FROM v2_artifacts WHERE evaluation_id=? ORDER BY sequence", (evaluation_id,)).fetchall()
+            return ReviewEvidenceSnapshot(evaluation=evaluation, artifacts=tuple(self._artifact(c, r[0]) for r in rows))

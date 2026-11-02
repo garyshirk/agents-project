@@ -30,7 +30,8 @@ opportunity/Evaluation table layouts are governed by V2 schema version 1.
 - `set_execution_state(evaluation_id, state, operation_key=...)`: explicit state
   recording only; no execution. Terminal execution is not automatically resumed.
 - `record_artifact(...)`: accepts only typed failure or assumption payloads here.
-  Future research/comparable/calculation categories are reserved, not implemented.
+  Checkpoint 2 also permits typed raw report storage. Other future categories
+  remain reserved; there is no calculation writer.
 - `record_summary(evaluation_id, draft, producer=..., operation_key=...)`: creates
   an immutable next summary revision, linking its predecessor automatically.
 - `get_opportunity`, `get_evaluation`, `get_artifact`, `list_artifacts`,
@@ -101,3 +102,62 @@ Schema checks validate shape/provenance, not truth of agent/human assertions.
 
 Human decisions always have `ASSESSMENT_ONLY` authority. Follow-up requests are
 stored text. Nothing here researches, calculates, purchases, lists, or resumes work.
+
+## Checkpoint 2: comparable evidence and qualitative assessments
+
+`ComparableProduct` uses optional named identifiers, variant/other attributes,
+condition, packaging, quantity, and bundle contents. Unknown values stay null;
+there are no mandatory shoe attributes or exact-match eligibility rules.
+
+`PriceEvidence` separates completed-sale claims, active asking prices, published
+references, human reports, and other qualified evidence. Monetary values use
+Decimal strings and explicit currency; no conversions or inferred sale amounts
+occur. Completed-sale claims require completion support and, when a numerical
+price is supplied, realized-price support. These are attributed source claims,
+not independent application verification. `ComparableSource.application_verified`
+is always false; URL validation checks syntax, not page contents or identity.
+
+Typed `RawResearchReport` records provide optional exact raw-source artifact
+bindings. Storing a supplied report does not fetch a page or perform research.
+
+Repository APIs:
+- `record_comparable(evaluation_id, draft, producer=..., operation_key=...)`
+- `record_comparable_revision(previous_ref, draft, ...)`
+- `record_assessment(evaluation_id, comparable_ref, draft, ...)`
+- `record_assessment_revision(previous_ref, comparable_ref, draft, ...)`
+- `list_comparable_history(evaluation_id)` and `get_comparable(exact_ref)`
+- `get_current_comparable(evaluation_id, comparable_id)`
+- `list_assessment_history(evaluation_id, comparable_id)`
+- `get_current_assessments(evaluation_id, comparable_id)`
+- `get_review_evidence(evaluation_id)`; human service `get_evidence` exposes
+  this complete ordered read snapshot, including failures and older judgments.
+
+Comparable and assessment lineage IDs are application-owned. Each revision has
+its own immutable ArtifactRef. A correction must name the latest predecessor;
+forks are refused. Multiple independent assessment lineages are allowed for the
+same comparable. Revising an assessment can explicitly target a newer revision
+of the same comparable identity, but never silently changes the old binding.
+
+Assessments preserve an attributed Candidate description anchored to a persisted
+same-Evaluation review subject/summary; they do not overwrite or independently
+verify the original Opportunity submission. The qualitative category is supplied,
+never computed from the attribute differences or used as an eligibility filter.
+
+Assessment history reports separate flags for latest assessment revision and
+binding to the current comparable revision. `is_current` requires both. Current
+assessment retrieval never filters by qualitative category; the complete history
+and review evidence retain stale and NOT_MEANINGFULLY_COMPARABLE assessments.
+
+All comparable/assessment references, raw-source references, and caller parents
+must exist in the exact Evaluation. Raw references must identify raw reports;
+assessment evidence must identify raw reports or comparables. Exact support
+references cannot smuggle other-Evaluation evidence into these records.
+
+Each successful new record/revision atomically advances the existing partial
+review subject. A replayed idempotency receipt does not advance it again. A previous
+economic summary is preserved, not recomputed or reclassified. Human review
+remains PENDING until the expanded evidence subject is actually reviewed.
+
+No tables or schema migration were added. Older checkpoint-1 payloads remain
+readable; old application code will not understand new checkpoint-2 payload kinds.
+Tests use explicitly synthetic `example.invalid` sources and temporary databases.
