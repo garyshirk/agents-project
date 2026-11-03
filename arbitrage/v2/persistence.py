@@ -21,6 +21,7 @@ from arbitrage.v2.contracts import (
     AssessmentState, CalculationRecord, ComputationStatus, EconomicScenario, ScenarioDraft,
     StepAttempt, StepInputManifest, WorkflowEvent, WorkflowLimits, WorkflowSnapshot, WorkflowStep,
     ManagerContext, ManagerContextLimits, ManagerSnapshot,
+    ModelCallRecord,
 )
 from arbitrage.v2.economics import ADAPTER_VERSION, ENGINE_VERSION, calculate_scenario
 
@@ -759,7 +760,7 @@ class V2Repository:
                 reason="Explicit bounded offline batch.",owner_token=owner_token,steps=steps)
         # Token is acquisition identity, not request content; replayers cannot acquire the original claim.
         return self._once(operation_key,"workflow_run",{"evaluation_id":evaluation_id,
-            "steps":[s.model_dump(mode="json") for s in steps]},Artifact,perform)
+            "steps":[s.model_dump(mode="json",exclude={"live_request"} if s.live_request is None else set()) for s in steps]},Artifact,perform)
 
     def begin_workflow_attempt(self, run: ArtifactRef, step_id, *, owner_token, operation_key):
         run = ArtifactRef.model_validate(run)
@@ -779,7 +780,7 @@ class V2Repository:
             manifest = StepInputManifest(opportunity_id=run.opportunity_id,evaluation_id=run.evaluation_id,
                 step_id=step.step_id,role=step.role,submission=opportunity.submission,
                 context_references=step.context_references,context_text=step.context_text,
-                fixture=step.fixture,scenario=step.scenario)
+                fixture=step.fixture,scenario=step.scenario,live_request=step.live_request)
             number = 1 + sum(a.payload.status == "STARTED" and a.payload.input_manifest.step_id == step_id for a in snapshot.attempts)
             now = _now()
             payload = StepAttempt(attempt_id=str(uuid4()),attempt_number=number,run=run,
@@ -804,7 +805,8 @@ class V2Repository:
                 expected = {"RESEARCH":ArtifactType.RAW_RESEARCH_REPORT,"COMPARABLE":ArtifactType.RESALE_COMPARABLE,
                     "ASSESSMENT":ArtifactType.COMPARABLE_ASSESSMENT,"ASSUMPTION":ArtifactType.SCENARIO_ASSUMPTION,
                     "SCENARIO":ArtifactType.ECONOMIC_SCENARIO,"CALCULATION":ArtifactType.CALCULATION,
-                    "SUMMARY":ArtifactType.EVALUATION_SUMMARY,"MANAGER":ArtifactType.MANAGER_APPLICATION}[original.payload.input_manifest.role]
+                    "SUMMARY":ArtifactType.EVALUATION_SUMMARY,"MANAGER":ArtifactType.MANAGER_APPLICATION,
+                    "LIVE_MANAGER":ArtifactType.MANAGER_APPLICATION}[original.payload.input_manifest.role]
                 receipt = c.execute("SELECT result_json FROM v2_operations WHERE operation_key=?",
                     ("workflow-output:" + original.payload.attempt_id,)).fetchone()
                 if receipt is None or Artifact.model_validate_json(receipt[0]) != output or output.artifact_type != expected:
@@ -943,3 +945,89 @@ class V2Repository:
                 self._manager_transaction.reset(token)
         return self._once(operation_key,"manager_decision",{"context":context.model_dump(mode="json"),
             "proposal_json":proposal_json,"producer":producer.model_dump(mode="json")},Artifact,perform)
+
+    def list_model_calls(self, evaluation_id):
+        with self._connection() as c:
+            return self._evidence_history(c,evaluation_id,ArtifactType.MODEL_CALL)
+
+    def start_model_call(self, attempt, *, request_sha256, instruction_version, instruction_sha256,
+                         reserved_tokens, live_authorized, offline_client, ambiguous_retry_acknowledged):
+        attempt = ArtifactRef.model_validate(attempt)
+        def perform(c):
+            start = self._typed_reference(c,attempt,attempt.evaluation_id,{ArtifactType.RESEARCH_ATTEMPT})
+            manifest=start.payload.input_manifest
+            if start.payload.status != "STARTED" or manifest.role != "LIVE_MANAGER":
+                raise V2PersistenceError("Model invocation requires its durable live Manager attempt")
+            request=manifest.live_request
+            context=self._typed_reference(c,request.context,attempt.evaluation_id,{ArtifactType.MANAGER_CONTEXT})
+            current=self._evaluation(c,attempt.evaluation_id)
+            if (current.execution_state != ExecutionState.RUNNING or current.current_review_subject != context.payload.review_subject
+                    or current.current_summary != context.payload.publication_target):
+                raise V2PersistenceError("Stale Manager context; no provider call permitted")
+            if not offline_client and not live_authorized:
+                raise V2PersistenceError("Explicit live authorization required")
+            history=self._evidence_history(c,attempt.evaluation_id,ArtifactType.MODEL_CALL)
+            starts=[a for a in history if a.payload.stage=="STARTED"]
+            caps=lambda cfg:(cfg.max_invocations,cfg.max_attempts,cfg.max_total_tokens)
+            if starts and caps(starts[0].payload.request.config)!=caps(request.config):
+                raise V2PersistenceError("Evaluation model-budget ceilings are fixed by its first invocation")
+            if len(starts)>=request.config.max_invocations:
+                raise V2PersistenceError("Model invocation budget exhausted")
+            prior=[a for a in starts if self._artifact(c,a.payload.attempt.artifact_id).payload.input_manifest.step_id==manifest.step_id]
+            if len(prior)>=request.config.max_attempts:
+                raise V2PersistenceError("Model attempt budget exhausted")
+            if prior:
+                records=[a for a in history if a.payload.call_id==prior[-1].payload.call_id]
+                if (records[-1].payload.ambiguous or records[-1].payload.stage!="FINISHED") and not ambiguous_retry_acknowledged:
+                    raise V2PersistenceError("Explicit acknowledgment required before retrying an ambiguous provider invocation")
+            reserved=0
+            for first in starts:
+                usages=[]
+                for a in history:
+                    usage=a.payload.usage
+                    if a.payload.call_id!=first.payload.call_id or usage is None:
+                        continue
+                    if usage.total_tokens is not None:
+                        usages.append(usage.total_tokens)
+                    elif usage.input_tokens is not None and usage.output_tokens is not None:
+                        usages.append(usage.input_tokens+usage.output_tokens)
+                reserved+=max((first.payload.reserved_tokens,*usages))
+            if reserved+reserved_tokens>request.config.max_total_tokens:
+                raise V2PersistenceError("Model token reservation budget exhausted")
+            now=_now()
+            payload=ModelCallRecord(stage="STARTED",call_id=str(uuid4()),attempt=attempt,start=None,request=request,
+                context_sha256=context.payload.snapshot_sha256,request_sha256=request_sha256,instruction_version=instruction_version,
+                instruction_sha256=instruction_sha256,reserved_tokens=reserved_tokens,live_authorized=live_authorized,
+                offline_client=offline_client,ambiguous_retry_acknowledged=ambiguous_retry_acknowledged,
+                started_at=now,recorded_at=now,status="INTENDED",limitations=(
+                    "Token reservation is conservative, not a provider-side total-input/output hard cap.",
+                    "No monetary ceiling is guaranteed; no pricing or provider usage is invented.",))
+            return self._insert_artifact(c,attempt.evaluation_id,ArtifactType.MODEL_CALL,payload,APPLICATION,(attempt,request.context),created_at=now)
+        return self._once("model-start:"+attempt.artifact_id,"model_start",dict(attempt=attempt.model_dump(mode="json"),
+            request_sha256=request_sha256,instruction_version=instruction_version,instruction_sha256=instruction_sha256,
+            reserved_tokens=reserved_tokens,live_authorized=live_authorized,offline_client=offline_client,
+            ambiguous_retry_acknowledged=ambiguous_retry_acknowledged),Artifact,perform)
+
+    def record_model_event(self, start, stage, **details):
+        start=ArtifactRef.model_validate(start)
+        if stage not in {"RECEIVED","FINISHED"}:
+            raise V2PersistenceError("Invalid model audit transition")
+        permitted={"status","ambiguous","provider_response_id","provider_request_id","provider_model","usage",
+                   "response_sha256","response_text","application","failure"}
+        if set(details)-permitted:
+            raise V2PersistenceError("Unknown audit fields")
+        def perform(c):
+            original=self._typed_reference(c,start,start.evaluation_id,{ArtifactType.MODEL_CALL})
+            if original.payload.stage!="STARTED":
+                raise V2PersistenceError("Audit event must identify the original model-call start")
+            records=[a for a in self._evidence_history(c,start.evaluation_id,ArtifactType.MODEL_CALL) if a.payload.call_id==original.payload.call_id]
+            if any(a.payload.stage=="FINISHED" or a.payload.stage==stage for a in records):
+                raise V2PersistenceError("Model audit event already completed")
+            if details.get("application"):
+                self._typed_reference(c,details["application"],start.evaluation_id,{ArtifactType.MANAGER_APPLICATION})
+            now=_now()
+            payload=ModelCallRecord.model_validate(records[-1].payload.model_dump()|details|dict(stage=stage,start=start,recorded_at=now))
+            parents=tuple(dict.fromkeys((start,*((payload.application,) if payload.application else ()))))
+            return self._insert_artifact(c,start.evaluation_id,ArtifactType.MODEL_CALL,payload,APPLICATION,parents,created_at=now)
+        encoded={k:(v.model_dump(mode="json") if hasattr(v,"model_dump") else v) for k,v in details.items()}
+        return self._once("model-event:"+start.artifact_id+":"+stage,"model_event",dict(start=start.model_dump(mode="json"),stage=stage,details=encoded),Artifact,perform)

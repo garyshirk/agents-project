@@ -667,6 +667,70 @@ class ManagerApplication(Contract):
     created_at: AwareDatetime
 
 
+DecisionKind = Literal["RESEARCH_REQUEST", "COMPARABLE_INTERPRETATION", "ECONOMIC_ASSUMPTION", "SCENARIO_PROPOSAL", "ECONOMIC_SUMMARY"]
+
+
+class ManagerModelConfig(Contract):
+    model: Text
+    decision_type: DecisionKind
+    max_output_tokens: int = Field(ge=16, strict=True)
+    timeout_seconds: float = Field(gt=0, le=300, allow_inf_nan=False)
+    max_invocations: int = Field(ge=1, strict=True)
+    max_attempts: int = Field(ge=1, strict=True)
+    max_total_tokens: int = Field(ge=1, strict=True)
+    max_request_bytes: int = Field(ge=1, le=2_000_000, strict=True)
+    max_response_bytes: int = Field(ge=1, le=2_000_000, strict=True)
+    max_estimated_cost_usd: str | None
+
+    @model_validator(mode="after")
+    def no_invented_prices(self):
+        if self.max_estimated_cost_usd is not None:
+            raise ValueError("No authoritative pricing/billable-total bound is configured; use explicit token/invocation budgets")
+        return self
+
+
+class LiveManagerRequest(Contract):
+    context: ArtifactRef
+    objective: Text
+    config: ManagerModelConfig
+
+
+class ModelUsage(Contract):
+    input_tokens: int | None = Field(default=None, ge=0, strict=True)
+    output_tokens: int | None = Field(default=None, ge=0, strict=True)
+    total_tokens: int | None = Field(default=None, ge=0, strict=True)
+
+
+class ModelCallRecord(Contract):
+    schema_version: Literal["v2-manager-model-call-v1"] = "v2-manager-model-call-v1"
+    stage: Literal["STARTED", "RECEIVED", "FINISHED"]
+    call_id: Text
+    attempt: ArtifactRef
+    start: ArtifactRef | None
+    request: LiveManagerRequest
+    context_sha256: Text
+    request_sha256: Text
+    instruction_version: Text
+    instruction_sha256: Text
+    reserved_tokens: int = Field(ge=1)
+    live_authorized: bool
+    offline_client: bool
+    ambiguous_retry_acknowledged: bool
+    started_at: AwareDatetime
+    recorded_at: AwareDatetime
+    status: Text
+    ambiguous: bool = False
+    provider_response_id: Text | None = None
+    provider_request_id: Text | None = None
+    provider_model: Text | None = None
+    usage: ModelUsage | None = None
+    response_sha256: Text | None = None
+    response_text: str | None = None
+    application: ArtifactRef | None = None
+    failure: FailureRecord | None = None
+    limitations: tuple[Text, ...] = ()
+
+
 class WorkflowLimits(Contract):
     max_specialist_invocations: int = Field(ge=1, strict=True)
     max_attempts_per_step: int = Field(ge=1, strict=True)
@@ -674,7 +738,7 @@ class WorkflowLimits(Contract):
     max_calculation_attempts: int = Field(ge=1, strict=True)
 
 
-StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER"]
+StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER", "LIVE_MANAGER"]
 
 
 class OfflineFixture(Contract):
@@ -692,10 +756,17 @@ class WorkflowStep(Contract):
     fixture: OfflineFixture | None = None
     scenario: ArtifactRef | None = None
     retry_of: ArtifactRef | None = None
+    live_request: LiveManagerRequest | None = None
 
     @model_validator(mode="after")
     def correct_boundary(self):
-        if self.role == "CALCULATION":
+        if self.role == "LIVE_MANAGER":
+            if (self.live_request is None or self.fixture is not None or self.scenario is not None
+                    or self.live_request.context not in self.context_references):
+                raise ValueError("Live Manager requires exact request context and no offline fixture/tools")
+        elif self.live_request is not None:
+            raise ValueError("Only a live Manager step may contain a model request")
+        elif self.role == "CALCULATION":
             if self.fixture is not None or self.scenario is None or self.scenario not in self.context_references:
                 raise ValueError("calculation requires an exact context scenario and no specialist fixture")
         elif self.fixture is None or self.scenario is not None:
@@ -715,6 +786,7 @@ class StepInputManifest(Contract):
     context_text: str
     fixture: OfflineFixture | None
     scenario: ArtifactRef | None
+    live_request: LiveManagerRequest | None = None
 
 
 class WorkflowEvent(Contract):
@@ -796,12 +868,13 @@ class ArtifactType(str, Enum):
     MANAGER_CONTEXT = "MANAGER_CONTEXT"
     MANAGER_DECISION = "MANAGER_DECISION"
     MANAGER_APPLICATION = "MANAGER_APPLICATION"
+    MODEL_CALL = "MODEL_CALL"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
     | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord
-    | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication,
+    | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication | ModelCallRecord,
     Field(discriminator="schema_version"),
 ]
 
@@ -832,6 +905,7 @@ class Artifact(Contract):
             ArtifactType.MANAGER_CONTEXT: ManagerContext,
             ArtifactType.MANAGER_DECISION: ManagerDecision,
             ArtifactType.MANAGER_APPLICATION: ManagerApplication,
+            ArtifactType.MODEL_CALL: ModelCallRecord,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -874,6 +948,11 @@ class Artifact(Contract):
                      self.payload.decision if isinstance(self.payload,ManagerApplication) else self.payload)
             if owner.evaluation_id != self.reference.evaluation_id or owner.opportunity_id != self.reference.opportunity_id:
                 raise ValueError("Manager artifact ownership mismatch")
+        if isinstance(self.payload,ModelCallRecord):
+            if (self.payload.attempt.evaluation_id != self.reference.evaluation_id
+                    or self.payload.attempt.opportunity_id != self.reference.opportunity_id
+                    or self.payload.recorded_at != self.created_at):
+                raise ValueError("Model audit ownership/timestamp mismatch")
         return self
 
 
