@@ -3,7 +3,9 @@
 import json
 import sqlite3
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ from arbitrage.v2.contracts import (
     RawResearchReport, ResaleComparable, ReviewEvidenceSnapshot,
     AssessmentState, CalculationRecord, ComputationStatus, EconomicScenario, ScenarioDraft,
     StepAttempt, StepInputManifest, WorkflowEvent, WorkflowLimits, WorkflowSnapshot, WorkflowStep,
+    ManagerContext, ManagerContextLimits, ManagerSnapshot,
 )
 from arbitrage.v2.economics import ADAPTER_VERSION, ENGINE_VERSION, calculate_scenario
 
@@ -45,11 +48,18 @@ class V2Repository:
     def __init__(self, database_path: str | Path, *, session_database_path: str | Path):
         self.paths = isolated_database_paths(database_path, session_database_path)
         self.database_path = self.paths.business
+        self._manager_transaction = ContextVar("v2_manager_transaction",default=None)
 
     @contextmanager
     def _connection(self, *, write=False, create=False):
         # Recheck existing aliases before every open. Never initialize sessions.
         isolated_database_paths(self.database_path, self.paths.sessions)
+        active = self._manager_transaction.get()
+        if active is not None:
+            if create:
+                raise V2PersistenceError("Schema initialization is not permitted inside decision application")
+            yield active
+            return
         mode = "rwc" if create else "rw" if write else "ro"
         with closing(sqlite3.connect(self.database_path.as_uri() + f"?mode={mode}", uri=True, timeout=2)) as connection:
             connection.row_factory = sqlite3.Row
@@ -794,7 +804,7 @@ class V2Repository:
                 expected = {"RESEARCH":ArtifactType.RAW_RESEARCH_REPORT,"COMPARABLE":ArtifactType.RESALE_COMPARABLE,
                     "ASSESSMENT":ArtifactType.COMPARABLE_ASSESSMENT,"ASSUMPTION":ArtifactType.SCENARIO_ASSUMPTION,
                     "SCENARIO":ArtifactType.ECONOMIC_SCENARIO,"CALCULATION":ArtifactType.CALCULATION,
-                    "SUMMARY":ArtifactType.EVALUATION_SUMMARY}[original.payload.input_manifest.role]
+                    "SUMMARY":ArtifactType.EVALUATION_SUMMARY,"MANAGER":ArtifactType.MANAGER_APPLICATION}[original.payload.input_manifest.role]
                 receipt = c.execute("SELECT result_json FROM v2_operations WHERE operation_key=?",
                     ("workflow-output:" + original.payload.attempt_id,)).fetchone()
                 if receipt is None or Artifact.model_validate_json(receipt[0]) != output or output.artifact_type != expected:
@@ -883,3 +893,53 @@ class V2Repository:
                 c.execute("UPDATE v2_evaluations SET updated_at=? WHERE evaluation_id=?",(event.created_at.isoformat(),evaluation_id))
             return event
         return self._once(operation_key,"workflow_finish",{"evaluation_id":evaluation_id,"state":state.value,"reason":reason},Artifact,perform)
+
+    def record_manager_context(self, evaluation_id, references, *, limits: ManagerContextLimits,
+                               historical_references=(), selection_limitations=(), operation_key):
+        refs = tuple(ArtifactRef.model_validate(r) for r in references)
+        historical = tuple(ArtifactRef.model_validate(r) for r in historical_references)
+        limits = ManagerContextLimits.model_validate(limits)
+        def perform(c):
+            if len(refs) != len(set(refs)) or len(historical) != len(set(historical)):
+                raise V2PersistenceError("Manager context references must be unique")
+            evaluation = self._evaluation(c,evaluation_id)
+            selected = tuple(self._reference(c,r,evaluation_id) for r in refs)
+            previous = tuple(self._reference(c,r) for r in historical)
+            if any(a.reference.evaluation_id == evaluation_id for a in previous):
+                raise V2PersistenceError("Explicit historical context must belong to another Evaluation")
+            workflow = self._workflow_snapshot(c,evaluation_id)
+            latest_event = workflow.events[-1] if workflow.events else None
+            if len(selected) + len(previous) + int(latest_event is not None and latest_event.reference not in refs) > limits.max_artifacts:
+                raise V2PersistenceError("Manager context artifact bound exceeded")
+            count = c.execute("SELECT COUNT(*) FROM v2_artifacts WHERE evaluation_id=?",(evaluation_id,)).fetchone()[0]
+            snapshot = ManagerSnapshot(opportunity=self._opportunity(c,evaluation.opportunity_id),evaluation=evaluation,
+                artifacts=selected,historical_artifacts=previous,workflow_event=latest_event,
+                unresolved_runs=workflow.unresolved_runs,unfinished_attempts=workflow.unfinished_attempts,
+                available_artifact_count=count)
+            encoded = snapshot.model_dump_json()
+            if len(encoded) > limits.max_characters:
+                raise V2PersistenceError("Manager context character bound exceeded; explicitly select a smaller context")
+            now = _now()
+            payload = ManagerContext(opportunity_id=evaluation.opportunity_id,evaluation_id=evaluation_id,
+                review_subject=evaluation.current_review_subject,publication_target=evaluation.current_summary,
+                selected_references=refs,historical_references=historical,limits=limits,
+                selection_limitations=selection_limitations,snapshot_json=encoded,
+                snapshot_sha256=sha256(encoded.encode()).hexdigest(),created_at=now)
+            return self._insert_artifact(c,evaluation_id,ArtifactType.MANAGER_CONTEXT,payload,APPLICATION,
+                tuple(dict.fromkeys((evaluation.current_review_subject,*refs))),created_at=now)
+        return self._once(operation_key,"manager_context",{"evaluation_id":evaluation_id,
+            "references":[r.model_dump(mode="json") for r in refs],"historical_references":[r.model_dump(mode="json") for r in historical],
+            "limits":limits.model_dump(mode="json"),"selection_limitations":list(selection_limitations)},Artifact,perform)
+
+    def record_manager_decision(self, context: ArtifactRef, proposal_json: str, *, producer: Producer, operation_key):
+        """Compose existing validated writers and their receipts inside one transaction."""
+        from arbitrage.v2.manager import apply_manager_decision
+        context,producer = ArtifactRef.model_validate(context),Producer.model_validate(producer)
+        def perform(c):
+            token = self._manager_transaction.set(c)
+            try:
+                return apply_manager_decision(self,c,context,proposal_json,producer)
+            finally:
+                self._manager_transaction.reset(token)
+        return self._once(operation_key,"manager_decision",{"context":context.model_dump(mode="json"),
+            "proposal_json":proposal_json,"producer":producer.model_dump(mode="json")},Artifact,perform)

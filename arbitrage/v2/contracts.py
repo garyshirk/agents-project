@@ -543,6 +543,130 @@ class CalculationRecord(CalculationOutcome):
     created_at: AwareDatetime
 
 
+class ManagerContextLimits(Contract):
+    max_artifacts: int = Field(ge=1, le=100, strict=True)
+    max_characters: int = Field(ge=1, le=1_000_000, strict=True)
+
+
+class ManagerContext(Contract):
+    schema_version: Literal["v2-manager-context-v1"] = "v2-manager-context-v1"
+    opportunity_id: Text
+    evaluation_id: Text
+    review_subject: ArtifactRef
+    publication_target: ArtifactRef | None
+    selected_references: tuple[ArtifactRef, ...]
+    historical_references: tuple[ArtifactRef, ...]
+    limits: ManagerContextLimits
+    selection_limitations: tuple[Text, ...]
+    # Validated ManagerSnapshot JSON avoids a recursive Artifact -> context -> Artifact schema.
+    snapshot_json: str
+    snapshot_sha256: Text
+    created_at: AwareDatetime
+
+
+class ResearchRequest(Contract):
+    kind: Literal["RESEARCH_REQUEST"]
+    objective: Text
+    target_subject: Text
+    requested_role: Literal["SOURCING", "RESALE", "ECONOMIC_COSTS", "HUMAN_INFORMATION"]
+    scope: tuple[Text, ...] = Field(min_length=1)
+    max_invocations: int = Field(ge=1, le=20, strict=True)
+    priority: Literal["HIGH", "NORMAL", "LOW"] | None = None
+
+
+class ComparableInterpretation(Contract):
+    kind: Literal["COMPARABLE_INTERPRETATION"]
+    comparable: ArtifactRef
+    selected_for_analysis: bool
+    assessment: AssessmentDraft
+    predecessor: ArtifactRef | None = None
+
+
+class AssumptionProposal(Contract):
+    kind: Literal["ECONOMIC_ASSUMPTION"]
+    assumption: EconomicAssumption
+
+    @model_validator(mode="after")
+    def numerical_assumption(self):
+        if self.assumption.amount is None or self.assumption.unit is None:
+            raise ValueError("Manager economic assumptions require explicit amount and unit")
+        return self
+
+
+class ScenarioProposal(Contract):
+    kind: Literal["SCENARIO_PROPOSAL"]
+    scenario: ScenarioDraft
+    predecessor: ArtifactRef | None = None
+
+
+class ComparableUse(Contract):
+    comparable: ArtifactRef
+    rationale: Text
+
+
+class SummaryExplanation(Contract):
+    opportunity_evaluated: Text
+    evidence_explanation: Text
+    comparables: tuple[ComparableUse, ...]
+    product_differences: tuple[Text, ...]
+    assumptions_explanation: Text
+    assumption_references: tuple[ArtifactRef, ...]
+    uncertain_costs: tuple[UnknownEconomicInput, ...]
+    confidence_improvements: tuple[Text, ...] = Field(min_length=1)
+    conditional_usefulness: Text | None = None
+
+
+class SummaryProposal(Contract):
+    kind: Literal["ECONOMIC_SUMMARY"]
+    summary: SummaryDraft
+    expected_summary: ArtifactRef | None
+    explanation: SummaryExplanation
+
+    @model_validator(mode="after")
+    def conditional_disclosure(self):
+        if self.summary.assessment_state == AssessmentState.CONDITIONAL_ESTIMATE:
+            if not self.explanation.conditional_usefulness or not self.summary.consequential_uncertainties:
+                raise ValueError("conditional summaries require usefulness rationale and consequential uncertainties")
+        return self
+
+
+class ManagerProposal(Contract):
+    schema_version: Literal["v2-manager-proposal-v1"] = "v2-manager-proposal-v1"
+    opportunity_id: Text
+    evaluation_id: Text
+    context: ArtifactRef
+    author_name: Text
+    rationale: Text
+    evidence_references: tuple[ArtifactRef, ...]
+    limitations: tuple[Text, ...]
+    uncertainties: tuple[Text, ...]
+    intent: Annotated[ResearchRequest | ComparableInterpretation | AssumptionProposal | ScenarioProposal
+                      | SummaryProposal, Field(discriminator="kind")]
+    supersedes: ArtifactRef | None = None
+
+
+class ManagerDecision(Contract):
+    schema_version: Literal["v2-manager-decision-v1"] = "v2-manager-decision-v1"
+    decision_id: Text
+    revision: int = Field(ge=1)
+    supersedes: ArtifactRef | None = None
+    proposal: ManagerProposal
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def consistent_revision(self):
+        if (self.revision == 1) != (self.supersedes is None) or self.supersedes != self.proposal.supersedes:
+            raise ValueError("Manager revision must preserve its exact authored predecessor")
+        return self
+
+
+class ManagerApplication(Contract):
+    schema_version: Literal["v2-manager-application-v1"] = "v2-manager-application-v1"
+    decision: ArtifactRef
+    outcome: ArtifactRef | None
+    created_at: AwareDatetime
+
+
 class WorkflowLimits(Contract):
     max_specialist_invocations: int = Field(ge=1, strict=True)
     max_attempts_per_step: int = Field(ge=1, strict=True)
@@ -550,7 +674,7 @@ class WorkflowLimits(Contract):
     max_calculation_attempts: int = Field(ge=1, strict=True)
 
 
-StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY"]
+StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER"]
 
 
 class OfflineFixture(Contract):
@@ -669,12 +793,15 @@ class ArtifactType(str, Enum):
     CALCULATION = "CALCULATION"
     ECONOMIC_SCENARIO = "ECONOMIC_SCENARIO"
     WORKFLOW_EVENT = "WORKFLOW_EVENT"
+    MANAGER_CONTEXT = "MANAGER_CONTEXT"
+    MANAGER_DECISION = "MANAGER_DECISION"
+    MANAGER_APPLICATION = "MANAGER_APPLICATION"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
     | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord
-    | WorkflowEvent | StepAttempt,
+    | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication,
     Field(discriminator="schema_version"),
 ]
 
@@ -702,6 +829,9 @@ class Artifact(Contract):
             ArtifactType.CALCULATION: CalculationRecord,
             ArtifactType.WORKFLOW_EVENT: WorkflowEvent,
             ArtifactType.RESEARCH_ATTEMPT: StepAttempt,
+            ArtifactType.MANAGER_CONTEXT: ManagerContext,
+            ArtifactType.MANAGER_DECISION: ManagerDecision,
+            ArtifactType.MANAGER_APPLICATION: ManagerApplication,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -737,6 +867,13 @@ class Artifact(Contract):
             owner = self.payload.input_manifest if isinstance(self.payload, StepAttempt) else self.payload
             if (owner.evaluation_id != self.reference.evaluation_id or owner.opportunity_id != self.reference.opportunity_id):
                 raise ValueError("workflow artifact ownership mismatch")
+        if isinstance(self.payload,(ManagerContext,ManagerDecision,ManagerApplication)):
+            if self.payload.created_at != self.created_at:
+                raise ValueError("Manager timestamps must be application-owned")
+            owner = (self.payload.proposal if isinstance(self.payload,ManagerDecision) else
+                     self.payload.decision if isinstance(self.payload,ManagerApplication) else self.payload)
+            if owner.evaluation_id != self.reference.evaluation_id or owner.opportunity_id != self.reference.opportunity_id:
+                raise ValueError("Manager artifact ownership mismatch")
         return self
 
 
@@ -808,3 +945,14 @@ class WorkflowSnapshot(Contract):
     def unfinished_attempts(self):
         ended = {a.payload.start for a in self.attempts if a.payload.start}
         return tuple(a.reference for a in self.attempts if a.payload.status == "STARTED" and a.reference not in ended)
+
+
+class ManagerSnapshot(Contract):
+    opportunity: Opportunity
+    evaluation: Evaluation
+    artifacts: tuple[Artifact, ...]
+    historical_artifacts: tuple[Artifact, ...]
+    workflow_event: Artifact | None
+    unresolved_runs: tuple[ArtifactRef, ...]
+    unfinished_attempts: tuple[ArtifactRef, ...]
+    available_artifact_count: int = Field(ge=0)

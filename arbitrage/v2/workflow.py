@@ -51,11 +51,17 @@ class SpecialistFailure(Contract):
     failure: FailureRecord
 
 
+class ManagerOutput(Contract):
+    role: Literal["MANAGER"]
+    context: ArtifactRef
+    proposal_json: str
+
+
 class OfflineResponse(Contract):
     opportunity_id: Text
     evaluation_id: Text
     output: Annotated[ResearchOutput | ComparableOutput | AssessmentOutput | AssumptionOutput
-                      | ScenarioOutput | SummaryOutput | SpecialistFailure, Field(discriminator="role")]
+                      | ScenarioOutput | SummaryOutput | SpecialistFailure | ManagerOutput, Field(discriminator="role")]
 
 
 class RecoveryRequired(V2PersistenceError):
@@ -116,6 +122,8 @@ class OfflineWorkflow:
         output = response.output
         producer = Producer(kind="APPLICATION",name="Synthetic offline fixture: " + manifest.fixture.fixture_id)
         options = dict(producer=producer,operation_key=key)
+        if isinstance(output,ManagerOutput):
+            return self.repository.record_manager_decision(output.context,output.proposal_json,**options)
         if isinstance(output,ResearchOutput):
             return self.repository.record_artifact(eid,output.report,parents=manifest.context_references,**options)
         if isinstance(output,ComparableOutput):

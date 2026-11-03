@@ -396,3 +396,127 @@ partial failure, insufficient/invalid/error economics, invalid ownership, restar
 interruption at persistence boundaries, concurrency, rollback, and bounded retries.
 No production migration or real database initialization is performed. Earlier V2
 payloads remain readable; older code cannot read these new workflow payload kinds.
+
+# Checkpoint 5: offline Manager decision boundary
+
+`OfflineManager` in `manager.py` is a trusted application facade over the existing
+offline workflow. It adds no live model, prompts, research execution, planning
+loop, UI, or commercial authority. The unchanged terminal app still runs V1C.
+
+## Exact bounded input
+
+`build_context(evaluation_id, references, limits=ManagerContextLimits(...),
+operation_key=...)` persists an immutable MANAGER_CONTEXT artifact. The application
+explicitly selects exact artifact revisions; no agent receives a repository handle.
+Limits bound both artifact count (including explicit historical records and the
+captured workflow event) and serialized snapshot characters. Oversized contexts
+fail rather than silently dropping evidence. Selection limitations and the count
+of available artifacts make omitted context visible.
+
+The typed `ManagerSnapshot` contains the exact original Opportunity/submission,
+Evaluation/publication target, selected artifacts with all nested evidence and
+provenance, and recorded workflow progress/unresolved attempts. Research, intake
+claims, comparable/assessment revisions, scenarios, calculations, summaries,
+knowns, unknowns, and failures remain in their existing typed contracts. Prose is
+not parsed into invented facts. Artifact snapshots are stored as validated immutable
+JSON with a SHA-256 manifest to avoid recursive Artifact/context schemas.
+`read_context` returns fresh typed objects and checks manifest consistency.
+
+Contexts do not advance review-currentness merely by being assembled. Before
+application, the stored review subject and summary target must still match the
+Evaluation inside the same SQLite write transaction. New evidence, decisions,
+failures, or publication changes make the context stale. Ordinary workflow
+bookkeeping does not invalidate a context as its own Manager step begins.
+Nothing silently rebinds to newer evidence. Explicit fresh contexts and revised
+decisions are required. Intentionally selected historical revisions stay exact.
+
+`historical_references=...` only resolves explicitly supplied exact persisted refs;
+there is no automatic historical search/retrieval. Historical records belong to
+another Evaluation and can support only declared historical provenance, not direct
+current-Evaluation evidence, comparable selection, or publication targets.
+
+## Five independent authored intents
+
+`ManagerProposal` binds the selected Evaluation/Opportunity, exact context,
+authored rationale, evidence refs, limitations/uncertainties, and one small intent:
+
+- `ResearchRequest`: objective, target, requested sourcing/resale/cost/human-input
+  role, scope, bounded proposed invocation count, and optional priority. The durable
+  decision is only a request; it executes nothing and consumes no research budget.
+- `ComparableInterpretation`: exact comparable, authored selection flag, and the
+  existing `AssessmentDraft`. Categories, similarities, differences, unknowns, price
+  classification, units, and source limitations are preserved. No score, exact-match
+  gate, minimum count, or automatic weak-evidence exclusion is introduced.
+- `AssumptionProposal`: existing numerical `EconomicAssumption`, preserving rationale,
+  amount, unit, and all four provenance categories. Units must use the Checkpoint 3
+  `CURRENCY/CostType` convention. General knowledge needs no URL; current/historical
+  evidence claims require exact supplied support. Assumptions cannot be observations.
+- `ScenarioProposal`: existing `ScenarioDraft`, with optional exact predecessor.
+  Existing pure assembly checks reject invalid/unsupported coverage, units, and
+  currency mappings. Insufficient scenarios may still persist. No calculation,
+  midpoint, assumption, or price is generated automatically.
+- `SummaryProposal`: existing `SummaryDraft`, exact expected publication target,
+  and concise structured explanation of the opportunity, important evidence, used
+  comparables and their rationale, product differences, assumptions, uncertain
+  costs, and useful next evidence. Conditional summaries additionally explain why
+  the estimate is useful despite missing information and disclose consequential
+  uncertainties.
+
+Each accepted decision has an application-owned lineage ID, revision, producer,
+timestamp, and explicit predecessor when revised. A revision must name the latest
+decision of the same purpose; a different purpose starts a new lineage. No original
+evidence or historical artifact is rewritten.
+
+## Validation, atomicity, and workflow authority
+
+`submit(context_ref, proposal_or_json, step_id=..., operation_key=...)` supplies a
+SYNTHETIC_OFFLINE fixture to a MANAGER workflow step. Its invocation, limits,
+attempts, errors, interruptions, idempotency, and recovery use Checkpoint 4.
+Malformed/forbidden proposals and stale/cross-Evaluation refs become durable failed
+attempts when storage is available. Their original bytes remain in the input
+fixture; prior valid summaries and evidence survive. There is no unrestricted
+tool-data logging or repository capability in fixture data.
+
+The trusted adapter validates only exact records actually supplied in the context.
+It uses existing assessment, assumption, scenario, and summary writers. A narrow
+context-local transaction scope composes those writers: accepted decision, domain
+artifact, review-subject update, application linkage, and idempotency receipts all
+commit together or roll back together. SQLite write serialization makes conflicting
+publications against one context fail stale after the first succeeds. Existing
+V2 calls outside this scope retain their earlier transaction behavior.
+
+MANAGER_APPLICATION is the workflow's validated output receipt. It binds the exact
+MANAGER_DECISION to its optional accepted domain artifact. Summary publication adds
+the application-owned decision as an origin evidence reference, without changing
+the authored economic fields. This lets the current published summary cover the
+full structured explanation rather than immediately becoming a partial subject.
+Application linkage after publication is bookkeeping, not new economic evidence.
+
+Calculations are still separately requested by the application using the existing
+CALCULATION step/API. Proposing a scenario never calculates it, and arithmetic
+never automatically publishes a summary. Numerical summaries must cite supplied
+validated calculations and their exact scenario manifests. All calculation
+assumptions must be disclosed with their exact values/units/provenance, and used
+comparable revisions must have authored explanations. No engine result field can
+be authored in a Manager proposal. JSON floating-point monetary values are refused;
+explicit decimal text preserves existing arithmetic precision.
+
+The author chooses EVIDENCE_BASED_ESTIMATE, CONDITIONAL_ESTIMATE, or
+INSUFFICIENT_INFORMATION. The application checks structural calculation links and
+disclosures, not whether the economic judgment is persuasive. No universal number
+of completed sales or exact product attributes is imposed. An insufficient summary
+needs no numerical calculation and may explain partial/failed research. Free-text
+interpretations remain attributed assertions; Python does not verify their truth.
+
+Accepted decisions/evidence advance the existing review subject, keeping older human
+decisions historical. Context creation alone does not. Every Evaluation remains in
+the review queue. Manager decisions cannot record human reviews, remove Evaluations,
+claim purchased/listed state, or authorize commercial actions. Human review remains
+a separate assessment-only service.
+
+Tests use temporary databases and explicitly fictional decisions/evidence. No real
+database initialization/migration, historical Attempt 7 mutation, V1C source change,
+live API call, or external research is part of this checkpoint. Future live adapter
+design, context selection UX, human interfaces, and research approval/execution are
+separate work. Earlier V2 payloads remain readable; older code cannot read the new
+Manager artifact kinds.
