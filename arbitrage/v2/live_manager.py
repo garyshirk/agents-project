@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Literal, Protocol
 
 from pydantic import create_model
+from openai.lib._pydantic import to_strict_json_schema
 
 from arbitrage.v2.contracts import (
     ArtifactRef, AssumptionProposal, ComparableInterpretation, Contract, FailureRecord, LiveManagerRequest,
@@ -19,7 +20,7 @@ from arbitrage.v2.persistence import V2PersistenceError
 from arbitrage.v2.workflow import OfflineWorkflow, RecoveryRequired, output_operation_key
 
 
-PROMPT_VERSION = "v2-manager-controlled-v3"
+PROMPT_VERSION = "v2-manager-controlled-v4"
 INSTRUCTIONS = """Help a human assess potential resale opportunities. Produce the most useful defensible
 assessment supported by the supplied evidence. Distinguish observations, human claims, assumptions,
 deterministic calculations, interpretations, and uncertainties. Every Evaluation receives human review.
@@ -75,19 +76,26 @@ When requesting completed-sale research ask for the basis of completion and limi
 reported sale price, including accepted-offer uncertainty. Keep asking prices separate; they can
 inform a cautiously interpreted conditional estimate, not a fabricated completed sale.
 Use decimal strings for economic values. Do not generate engine results, human review decisions,
-purchases, listings or payments. Produce one proposal matching the supplied application schema,
-as JSON text in proposal_json. Do not repair missing evidence by inventing facts."""
+purchases, listings or payments. Return the complete proposal directly as a JSON object matching
+the requested strict output schema, not a proposal_json string or other envelope. Use only defined
+fields. Put source/evidence requirements in existing scope entries, not new fields such as
+source_requirements. Do not repair missing evidence by inventing facts."""
 INTENT_TYPES = {
     "RESEARCH_REQUEST":ResearchRequest,"COMPARABLE_INTERPRETATION":ComparableInterpretation,
     "ECONOMIC_ASSUMPTION":AssumptionProposal,"SCENARIO_PROPOSAL":ScenarioProposal,"ECONOMIC_SUMMARY":SummaryProposal,
 }
-ENVELOPE_SCHEMA = {"type":"object","properties":{"proposal_json":{"type":"string"}},
-                   "required":["proposal_json"],"additionalProperties":False}
 _PROVIDER_LOCK = Lock()  # Single controller/process; not a distributed lease.
 
 
-class ResponseEnvelope(Contract):
-    proposal_json: str
+def proposal_output_schema(decision_type):
+    """Transport-only specialization; persisted domain models and validators are unchanged.
+
+    Use the installed OpenAI SDK's strict converter (also used by Responses.parse).
+    Keep this private-SDK dependency localized and covered by schema tests.
+    """
+    typed=create_model("RequestedManagerProposal",__base__=ManagerProposal,
+                       intent=(INTENT_TYPES[decision_type],...))
+    return to_strict_json_schema(typed)
 
 
 class PreparedRequest(Contract):
@@ -129,8 +137,6 @@ def prepare_request(context_artifact, request: LiveManagerRequest) -> PreparedRe
     context=context_artifact.payload
     if len(context.snapshot_json)>context.limits.max_characters:
         raise ValueError("Context exceeds its recorded size bound")
-    typed=create_model("RequestedManagerProposal",__base__=ManagerProposal,
-                       intent=(INTENT_TYPES[request.config.decision_type],...))
     data={"decision_objective":request.objective,"permitted_decision_type":request.config.decision_type,
         "context_reference":request.context.model_dump(mode="json"),"context_sha256":context.snapshot_sha256,
         "authorized_evidence_references":[r.model_dump(mode="json") for r in authorized_evidence_references(context)],
@@ -142,12 +148,13 @@ def prepare_request(context_artifact, request: LiveManagerRequest) -> PreparedRe
             "bindings":"Use application-owned identifiers only in their designated contract fields.",
             "metadata":"Workflow events, attempts, audit IDs and other visible identifiers are not automatically evidence.",
             "original_intake":"Descriptive hypothetical/human-reported intake is context, not independently verified research."},
-        "application_schema":typed.model_json_schema(),"untrusted_context":snapshot.model_dump(mode="json")}
+        "untrusted_context":snapshot.model_dump(mode="json")}
     body=dict(model=request.config.model,input=[{"role":"system","content":INSTRUCTIONS},
         {"role":"user","content":json.dumps(data,sort_keys=True,separators=(",",":"))}],
         max_output_tokens=request.config.max_output_tokens,store=False,stream=False,truncation="disabled",
         tools=[],parallel_tool_calls=False,
-        text={"format":{"type":"json_schema","name":"manager_proposal_envelope","strict":True,"schema":ENVELOPE_SCHEMA}})
+        text={"format":{"type":"json_schema","name":"manager_proposal","strict":True,
+                        "schema":proposal_output_schema(request.config.decision_type)}})
     encoded=json.dumps(body,sort_keys=True,separators=(",",":"))
     size=len(encoded.encode())
     if size>request.config.max_request_bytes:
@@ -290,8 +297,7 @@ class LiveManager:
                 self.repository.record_model_event(start.reference,"FINISHED",status=category,failure=failure)
                 return workflow._complete(attempt,"SPECIALIST_FAILURE",failure=failure)
             try:
-                envelope=ResponseEnvelope.model_validate_json(text or "")
-                proposal=parse_proposal(envelope.proposal_json)
+                proposal=parse_proposal(text or "")
                 if proposal.intent.kind!=request.config.decision_type:
                     raise ValueError("Provider returned a different decision type")
             except ValueError:
@@ -299,7 +305,7 @@ class LiveManager:
                 self.repository.record_model_event(start.reference,"FINISHED",status="INVALID_RESPONSE",failure=failure)
                 return workflow._complete(attempt,"INVALID_OUTPUT",failure=failure)
             try:
-                application=self.repository.record_manager_decision(request.context,envelope.proposal_json,
+                application=self.repository.record_manager_decision(request.context,text,
                     producer=Producer(kind="AGENT",name="Controlled Manager model: "+request.config.model),operation_key=output_operation_key(attempt))
             except ValueError as error:
                 failure=FailureRecord(stage="application_validation",category=type(error).__name__,message="Provider succeeded; application rejected proposal")

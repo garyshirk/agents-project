@@ -136,7 +136,7 @@ class LiveManagerTests(unittest.TestCase):
 
     def test_extra_engine_results_not_allowed(self):
         data=self.fixture.proposal.model_dump(mode='json'); data['net_profit']='999'
-        self.client.reply=ProviderReply(status='COMPLETED',text=json.dumps({'proposal_json':json.dumps(data)}))
+        self.client.reply=ProviderReply(status='COMPLETED',text=json.dumps(data))
         self.assertEqual(self.execute().status,'INVALID_OUTPUT')
 
     def test_fabricated_reference_rejected_by_application(self):
@@ -277,11 +277,14 @@ class LiveManagerTests(unittest.TestCase):
         self.assertEqual(body['max_output_tokens'],2048)
         self.assertEqual(body['truncation'],'disabled')
 
-    def test_small_structured_output_envelope(self):
+    def test_complete_structured_output_schema(self):
         self.execute()
         body=json.loads(self.client.calls[0][0].api_json)
         self.assertTrue(body['text']['format']['strict'])
-        self.assertEqual(set(body['text']['format']['schema']['properties']),{'proposal_json'})
+        schema=body['text']['format']['schema']
+        self.assertIn('intent',schema['properties'])
+        self.assertNotIn('proposal_json',schema['properties'])
+        self.assertFalse(schema['additionalProperties'])
 
     def test_oversized_response_not_stored_or_repaired(self):
         self.client.reply=ProviderReply(status='COMPLETED',text='x'*1000)

@@ -778,3 +778,63 @@ Nike fixture and smoke-call safeguards remain intact. Next verification requires
 separate authorization for a controlled live test in fresh isolated storage;
 check-only is safe without live authorization. Prompt changes cannot guarantee
 better future judgment, and structural acceptance is not economic endorsement.
+
+## Checkpoint 6G: full per-intent output schemas
+
+6F completed at the provider but failed application parsing because the model
+invented `intent.source_requirements`. The old provider schema constrained only
+`{"proposal_json": "a string"}`. The nested application schema was supplied as
+user-message guidance, so a valid envelope did not establish a valid proposal.
+The strict domain validator correctly rejected the extra field. The saved 6F
+response and earlier smoke databases are unchanged.
+
+New live requests use a complete strict JSON Schema for a direct ManagerProposal
+object, specialized to the application's requested intent (option C). All five
+existing intents are supported: RESEARCH_REQUEST, COMPARABLE_INTERPRETATION,
+ECONOMIC_ASSUMPTION, SCENARIO_PROPOSAL and ECONOMIC_SUMMARY. A Literal `kind`
+selects the intent. No new domain fields, business types or persistence migration
+were introduced. Source requirements belong in existing scope entries, not an
+invented field. Prompt version is `v2-manager-controlled-v4`.
+
+The installed environment has openai 3.13.0 and pydantic 2.13.5. Inspection of
+`openai.lib._pydantic.to_strict_json_schema`, the Responses parsing helpers and
+Responses type definitions confirms local support for nested Pydantic schemas,
+refs, literal/enum fields, arrays, required nullable fields and extra-property
+rejection. The transport uses the same strict converter as Responses.parse.
+Its private SDK import is localized and tested; upgrades require revalidation.
+The converter makes defaulted properties required at the API boundary while
+preserving their nullable types; application defaults and domain validators
+remain unchanged. Per-intent specialization avoids the full domain union's
+discriminator/oneOf topology. Full-union transport would add unnecessary model
+choice; retaining a string envelope would leave the demonstrated gap intact.
+
+Responses.create still returns raw output text rather than auto-parsed Pydantic
+objects. This is intentional: the existing adapter first durably audits the raw
+bounded response, provider IDs and usage, then invokes strict application parsing.
+It checks the requested intent and applies unchanged domain, reference ownership,
+authorization, freshness, provenance, workflow and persistence validation.
+Provider compliance cannot establish these properties or economic correctness.
+Unknown fields remain rejected; there is no stripping, repair, fallback envelope
+unwrapping or retry. The raw direct proposal is the validated input to persistence.
+
+Refusal content and incomplete provider status remain outside normal proposal
+parsing and retain separate failure categories. Transport/timeouts, application
+schema rejection, application validation rejection and ambiguous recovery retain
+their existing handling. Token usage is retained even for rejected responses;
+parse failure does not mean no tokens were consumed. Bounded response auditing,
+receipts, rollback/recovery and human review are unchanged. Historical envelope
+responses remain audit records; recovery does not replay or reinterpret them.
+
+Offline tests check all five strict schemas, SDK parsing round-trips, actual
+fake-client acceptance, nullable/required and nested fields, enums, extra-field
+rejection, and a synthetic 6F reconstruction. Schema generation and SDK parsing
+do not prove that gpt-5.4-mini will accept/enforce every generated schema.
+No online documentation or provider probe was used in this offline checkpoint;
+model-specific schema subset, complexity/latency and token-fit behavior remain
+unverified live. No runtime schema fallback is provided.
+
+The Nike smoke fixture and one-call, zero-retry, 1,500-output-token, 45-second
+safeguards are unchanged. Next: separately authorize one controlled live test
+with fresh isolated storage to verify full-schema acceptance and application
+integration. If successful, scope a subsequent live Resale Specialist integration.
+Neither live step was executed in this checkpoint.

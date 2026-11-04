@@ -112,7 +112,7 @@ class ReferenceBoundaryTests(unittest.TestCase):
         self.assertEqual(payload['application_owned_identifiers']['context_reference'],self.context.reference.model_dump(mode='json'))
         self.assertIn('workflow_event',payload['untrusted_context'])
         self.assertEqual(body['input'][0]['content'],INSTRUCTIONS)
-        self.assertEqual(PROMPT_VERSION,'v2-manager-controlled-v3')
+        self.assertEqual(PROMPT_VERSION,'v2-manager-controlled-v4')
         for text in ('Only cite economic evidence','return empty evidence_references','not substitute source citations','Never invent'):
             self.assertIn(text,INSTRUCTIONS)
 

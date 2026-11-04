@@ -55,7 +55,7 @@ class ResearchGuidanceTests(unittest.TestCase):
             self.assertIn(text,INSTRUCTIONS)
         roles=set(ResearchRequest.model_json_schema()['properties']['requested_role']['enum'])
         self.assertEqual(roles,{'SOURCING','RESALE','ECONOMIC_COSTS','HUMAN_INFORMATION'})
-        self.assertEqual(PROMPT_VERSION,'v2-manager-controlled-v3')
+        self.assertEqual(PROMPT_VERSION,'v2-manager-controlled-v4')
 
     def test_scope_and_future_needs_are_guidance_not_extra_delegations(self):
         for text in ('one clear primary objective','realistic scope','explicit invocation limit',

@@ -35,7 +35,7 @@ def config(kind="RESEARCH_REQUEST",**changes):
 
 
 def reply(proposal,**changes):
-    return ProviderReply(**(dict(status="COMPLETED",text=json.dumps({"proposal_json":proposal.model_dump_json()}))|changes))
+    return ProviderReply(**(dict(status="COMPLETED",text=proposal.model_dump_json())|changes))
 
 
 TOPICS={
