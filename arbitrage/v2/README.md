@@ -722,3 +722,59 @@ original failed run. Existing one-invocation/one-attempt, zero-retry, 1,500-outp
 and 45-second limits are unchanged. No research is executed by this script.
 These instructions cannot guarantee model compliance; structural acceptance
 does not establish sound economic judgment. Human review remains required.
+
+## Checkpoint 6E: research routing and useful scope
+
+The accepted 6D smoke proposal preserved uncertainty and empty evidence refs,
+but chose HUMAN_INFORMATION for largely public eBay research and suggested
+exact identity verification before any resale assessment. This was a judgment
+weakness, not a transaction failure. Its stored Evaluation and audit remain
+unchanged. The versioned `v2-manager-controlled-v3` guidance addresses it offline.
+
+Choose roles by the primary objective, not keywords:
+
+- SOURCING: acquisition opportunities, retailers, purchase conditions,
+  availability evidence and acquisition-related costs.
+- RESALE: resale comparables, marketplaces, completed sales, asking prices,
+  resale fees, shipping conventions and demand.
+- ECONOMIC_COSTS: focused economic-cost research when it is the primary task.
+- HUMAN_INFORMATION: necessary direct observations, confirmation or authorization
+  unavailable through research specialists, such as local stock, physical
+  condition, labels, packaging or a locally observed price.
+
+Unverified data does not automatically require a human request. A human's ability
+to do a web search does not make public research a HUMAN_INFORMATION task.
+Conversely, mentioning eBay does not make every request a RESALE task.
+For mixed needs, propose one coherent primary request and disclose separate
+future needs in limitations/uncertainties. Acceptance never autonomously executes
+that request or a second delegation. Scope and invocation limits should be
+realistic; prioritize expected economic usefulness over exhaustive fact collection.
+
+V2 records broadly, reviews broadly and filters later. Exact, close and weaker
+comparables can inform a qualified assessment with disclosed differences in
+colorway, width, size, packaging or condition. Exact identity is not a universal
+gate. Explain insufficient evidence when appropriate; do not force numbers,
+minimum comparable counts, verified colorways, observed costs or completed sales.
+Variant adjustments require defensible explicit assumptions and provenance.
+
+COMPLETED_SALE evidence must support actual completion and the reported realized
+price. Ask for completion basis and price limitations, including accepted offers.
+Active asks, ended listings, unverified sold labels and cumulative sold counts
+do not establish that a buyer paid the displayed amount. Clearly labeled asking
+prices can still inform cautious conditional estimates. The actual contract
+identifier remains ACTIVE_ASK; no enum or persisted meaning changed.
+
+The offline evaluation harness now supplies human-authored research rubrics for
+role appropriateness, scope, prioritization, incomplete identity, comparable
+quality, completed-sale limitations and research versus direct observations.
+Authored cases include the 6D mismatch as structurally acceptable but deserving
+critique. Structure, provenance scope and application integrity are tested
+separately; economic judgment remains HUMAN_REVIEW_REQUIRED. These cases are
+not model predictions or a claim that one objectively correct plan exists.
+
+No routing veto, typed contract, reference/freshness guard, arithmetic, workflow
+budget, audit/recovery behavior or human-review authority changed. The synthetic
+Nike fixture and smoke-call safeguards remain intact. Next verification requires
+separate authorization for a controlled live test in fresh isolated storage;
+check-only is safe without live authorization. Prompt changes cannot guarantee
+better future judgment, and structural acceptance is not economic endorsement.

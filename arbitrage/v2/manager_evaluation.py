@@ -10,6 +10,18 @@ class JudgmentRubric(Contract):
     consequential_uncertainties: tuple[Text, ...]
 
 
+def research_judgment_rubric(case_name, *, expectations, uncertainties):
+    """Human review prompts, not automatic scoring or role/scope acceptance rules."""
+    return JudgmentRubric(case_name=case_name,human_authored_expectations=(
+        'Assess role appropriateness against the primary objective; no keyword-based correct answer.',
+        'Assess scope coherence and whether the invocation budget is realistic.',
+        'Assess research prioritization by expected economic value, not exhaustive fact collection.',
+        'Distinguish public research, necessary human observations and tolerable uncertainty.',
+        'Assess incomplete identity and comparable differences without an automatic exact-match gate.',
+        'Assess comparable quality and completion/realized-price support separately from asking prices.',
+        *expectations),consequential_uncertainties=tuple(uncertainties))
+
+
 class EvaluationReport(Contract):
     case_name: str
     structural_validity: bool
