@@ -677,3 +677,48 @@ decision/application references, and `list_review_queue()`. If interrupted or
 ambiguous, STOP: preserve the directory and inspect/recover its recorded run before
 considering any new call. Do not rerun with a different directory merely to bypass
 uncertainty or budgets. No live smoke test has been performed in this checkpoint.
+# Checkpoint 6C: explicit Manager evidence authority
+
+The versioned `v2-manager-controlled-v2` request supplies an explicit
+`authorized_evidence_references` list from the application's exact selected
+context artifacts. Visibility is not citation authority: workflow events,
+attempt/audit identifiers and context snapshot IDs are metadata, not economic
+evidence unless explicitly selected. Context, review-subject and publication
+IDs retain their designated binding roles. Historical support has its own
+explicit list and existing provenance restrictions.
+
+The first live smoke call parsed successfully but cited a visible INITIALIZED
+workflow event when selected evidence was empty. It was correctly rejected.
+That original run is preserved; normal regression tests reconstruct the case
+synthetically and do not depend on its temporary database or provider IDs.
+The correction clarifies the request rather than removing rejected references.
+A narrow application citation check also prevents context/binding IDs from
+bypassing the existing general reference walk. Ownership, exact revisions,
+freshness, domain types and provenance checks remain in force.
+
+Empty evidence does not mean verified support:
+
+| Decision | Empty evidence behavior |
+| --- | --- |
+| Research request | Allowed for original intake; bind intake through supplied context, not an invented artifact. |
+| Comparable interpretation | Top-level citations may be empty, but an exact supplied comparable and designated candidate binding are still required. |
+| Numerical assumption | An explicitly qualified model-general-knowledge assumption can have no record support; declared current/historical evidence requires exact supplied supporting records. Amount, unit and assumption provenance remain mandatory. |
+| Scenario | Unknown/not-applicable inputs need no fabricated citations; evidence-valued inputs need exact persisted evidence, and assumptions need actual assumption artifacts. Missing references cannot support numerical evidence. |
+| Summary | An insufficient-information qualitative summary can have no evidence citations. Numerical claims still require actual supplied calculations, scenario manifests, disclosures and applicable assumptions/comparables. |
+
+The smoke fixture now describes a hypothetical Nike Pegasus 41 offer at Ross,
+USD 39.99, men's US size 10, apparently unworn with original packaging, intended
+for eBay. The style identifier FD2722-099 is explicitly invented/unverified;
+its association with the model is not established. All inventory/offer details
+are synthetic, not real HUMAN_REPORTED observations or VERIFIED evidence.
+Missing identity, availability, tax, sales, shipping and fee evidence is explicit.
+No URLs or actual listing/sale observations are invented.
+
+Prepare fresh isolated paths and run `diagnostics/v2_manager_smoke.py` without
+`--run` or `--authorize-live` for check-only configuration/fixture inspection.
+Check-only constructs no client and writes no databases. A subsequent live test
+requires separate explicit authorization and fresh storage; never reuse the
+original failed run. Existing one-invocation/one-attempt, zero-retry, 1,500-output-token
+and 45-second limits are unchanged. No research is executed by this script.
+These instructions cannot guarantee model compliance; structural acceptance
+does not establish sound economic judgment. Human review remains required.

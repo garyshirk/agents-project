@@ -17,6 +17,23 @@ from arbitrage.v2.persistence import V2Repository
 from arbitrage.v2.workflow import OfflineWorkflow
 
 
+def synthetic_opportunity():
+    """Invented offer and unverified product identifiers; never a claim of actual retailer inventory."""
+    return OpportunitySubmission(
+        original_text="HYPOTHETICAL SYNTHETIC TEST ONLY. A simulated human reports finding Nike Pegasus 41 men's running shoes "
+        "at Ross for an offered purchase price of USD 39.99, men's US size 10, apparently new/unworn in the original box, "
+        "and wants to evaluate potential resale on eBay. The reported manufacturer style identifier is FD2722-099 "
+        "(invented, unverified fixture data; the model/style association is not established). All offer, condition and "
+        "availability details are invented test data, not a real human observation or current Ross inventory claim. "
+        "Missing information includes verified style/model matching, authenticity, actual availability/quantity, sales tax, "
+        "eBay sale evidence, seller-paid shipping and marketplace fees. No actual listings, completed sales, or source URLs "
+        "have been supplied. Propose one narrow next research request using this intake; do not execute research or transact.",
+        scenario_kind='HYPOTHETICAL',human_actor='Authorized smoke-test operator',
+        qualifications=('Simulated human report, not HUMAN_REPORTED real inventory or VERIFIED economic evidence.',
+                        'Manufacturer style identifier and all offer details are unverified synthetic fixture data.',
+                        'No source URLs, observed listings or completed-sale evidence.'))
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--business-db',required=True,type=Path)
@@ -31,7 +48,8 @@ def main(argv=None):
         max_request_bytes=80000,max_response_bytes=30000,max_estimated_cost_usd=None)
     if not args.run:
         print(json.dumps(dict(status='CHECK_ONLY_NO_CALL_NO_DB_WRITES',configuration=cfg.model_dump(mode='json'),
-                              business_db=str(paths.business),sessions_db=str(paths.sessions))))
+                              business_db=str(paths.business),sessions_db=str(paths.sessions),
+                              synthetic_opportunity=synthetic_opportunity().model_dump(mode='json'))))
         return 0
     if not args.authorize_live:
         parser.error('--run requires explicit --authorize-live; environment/key presence is not authorization')
@@ -44,9 +62,7 @@ def main(argv=None):
     sdk=OpenAI(max_retries=0,timeout=cfg.timeout_seconds)
     repo=V2Repository(paths.business,session_database_path=paths.sessions)
     repo.initialize_schema()
-    accepted=OfflineWorkflow(repo).accept(OpportunitySubmission(original_text='Synthetic smoke test: hypothetical product offered for $40. '
-        'No verified inventory, identity, resale market, or costs. Propose useful next research only; do not execute it.',
-        scenario_kind='HYPOTHETICAL',human_actor='Authorized smoke-test operator'),
+    accepted=OfflineWorkflow(repo).accept(synthetic_opportunity(),
         WorkflowLimits(max_specialist_invocations=1,max_attempts_per_step=1,max_workflow_steps=1,max_calculation_attempts=1),operation_key='smoke-intake')
     context=OfflineManager(repo).build_context(accepted.evaluation.evaluation_id,(),
         limits=ManagerContextLimits(max_artifacts=5,max_characters=40000),

@@ -58,6 +58,23 @@ def parse_proposal(encoded):
     return ManagerProposal.model_validate(json.loads(encoded,parse_float=_reject_float,parse_constant=_reject_float))
 
 
+def authorized_evidence_references(context):
+    """Only explicit application selection grants citation authority; visibility alone does not."""
+    return tuple(context.selected_references)
+
+
+def _validate_evidence_citations(proposal, context):
+    authorized=set(authorized_evidence_references(context))
+    for value in _walk(proposal,BaseModel):
+        for reference in getattr(value,"evidence_references",()):
+            if reference not in authorized:
+                raise V2PersistenceError("Economic evidence citation is not in the authorized evidence-reference list")
+    for support in _walk(proposal,SupportingRecord):
+        permitted=context.historical_references if support.source==KnowledgeSource.HISTORICAL_EVALUATIONS else authorized
+        if support.artifact not in permitted:
+            raise V2PersistenceError("Provenance support must use an explicitly authorized evidence/historical reference")
+
+
 def _validate_summary(intent, snapshot):
     artifacts = {a.reference:a for a in snapshot.artifacts}
     disclosed_assumptions = set(intent.explanation.assumption_references)
@@ -105,6 +122,7 @@ def apply_manager_decision(repo, connection, context_ref, encoded, producer):
         raise StaleManagerContext("Manager publication requires a nonterminal Evaluation")
     if current.current_review_subject != context.review_subject or current.current_summary != context.publication_target:
         raise StaleManagerContext("Manager context/publication target is stale; build a fresh context and explicitly revise")
+    _validate_evidence_citations(proposal,context)
     allowed = set(context.selected_references) | {context.review_subject}
     if context.publication_target:
         allowed.add(context.publication_target)
