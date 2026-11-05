@@ -285,11 +285,13 @@ class LiveResaleTests(unittest.TestCase):
 
     def test_check_only_no_client_databases_or_network(self):
         from diagnostics.v2_resale_smoke import main
-        args=['--business-db',str(self.root/'check.db'),'--sessions-db',str(self.root/'check-sessions.db'),'--model','synthetic-model']
+        directory=tempfile.TemporaryDirectory(prefix='v2-resale-live.');self.addCleanup(directory.cleanup)
+        root=Path(directory.name)
+        args=['--business-db',str(root/'arbitrage.db'),'--sessions-db',str(root/'sessions.db'),'--model','gpt-5.4-mini']
         with patch('openai.OpenAI',side_effect=AssertionError('No client')),patch('socket.socket',side_effect=AssertionError('No network')),patch('builtins.print'):
             self.assertEqual(main(args),0)
-            with self.assertRaises(SystemExit):main([*args,'--run','--authorize-live'])
-        self.assertFalse((self.root/'check.db').exists());self.assertFalse((self.root/'check-sessions.db').exists())
+            with self.assertRaises(SystemExit):main([*args,'--run'])
+        self.assertEqual(list(root.iterdir()),[])
 
     def test_model_text_is_not_provider_source_metadata(self):
         citations,tools,refused=source_metadata({'output':[{'type':'message','content':[{

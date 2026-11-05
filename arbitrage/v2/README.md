@@ -1056,3 +1056,95 @@ token/timeout/byte budgets and zero retries. Verify schema/tool acceptance,
 source metadata, domain validation, atomic publication and human review. Preserve
 any refusal, incomplete, failed or ambiguous run and stop without replay. No such
 live test or marketplace access occurred in 7B-1.
+
+## Checkpoint 7B-2A: controlled live diagnostic preparation (offline only)
+
+`diagnostics/v2_resale_smoke.py` now has a future live execution path, superseding
+7B-1's check-only CLI restriction. Default mode and explicit `--check-only` remain
+read-only: no client construction, .env loading, directory/file creation, SQLite
+initialization, provider calls or searches. Live mode requires BOTH `--run` and
+`--authorize-live`. Either alone, or either combined with `--check-only`, fails.
+API key presence is not authorization. `run_once` separately checks application
+authorization and fixed policy; the existing LiveResaleWorkflow also requires
+LIVE mode and explicit authorization at dispatch.
+
+Only the explicitly selected `gpt-5.4-mini` candidate is accepted. Prior Manager
+testing established its strict-output operation, not its combined strict-output
+and web_search behavior. That combination remains UNVERIFIED_LIVE. There is no
+model substitution, capability probe, extraction fallback, second provider call,
+automatic retry or continuation. Fixed policy is one specialist/research pass,
+one provider invocation, three web-search calls, 6,000 output tokens, 45-second
+SDK timeout and zero retries. Existing 100,000 request-byte, 200,000 response-byte
+and 1,000,000 conservative token-reservation ceilings are unchanged. CLI overrides
+for tools, retries or budgets are not supported. No commercial tools exist.
+
+Both explicit absolute database paths must name `arbitrage.db` and `sessions.db`
+in the same existing, empty, private (0700), current-user-owned directory. It must
+be an immediate child of an OS temporary root, named `v2-resale-live.XXXXXX` (at
+least six suffix characters). Repository/development paths, historical smoke
+prefixes, relative/traversal paths, arbitrary symlink components, aliased files,
+nonempty directories and even existing zero-byte databases are rejected. Only
+the known macOS /tmp and /var system aliases are accepted and resolved canonically.
+Check-only validates this policy without creating its target directory.
+
+Authorized execution rechecks paths and uses a no-follow directory descriptor
+plus exclusive no-follow creation of `.resale-smoke.claim`. Directory identity
+is checked before setup and dispatch. The marker is never removed automatically,
+even after setup failure or interruption; all claimed directories become
+non-reusable. This protects controlled application use in private temporary
+storage; it is not a sandbox against a hostile same-user process altering files.
+Never delete a claim to bypass an uncertain run. Inspect preserved records instead.
+
+Setup reuses the hypothetical Nike Pegasus 41/Ross USD 39.99, men's US 10, unworn
+original-box intake with unverified FD2722-099. It uses existing application APIs
+to accept the opportunity, build context, persist an application-authored Manager
+RESALE decision with its acceptance receipt, and create the 7A delegation. There
+is no live Manager call and no historical ID reuse. Exact intake, Evaluation,
+accepted decision, scope, marketplace and one-invocation limit are checked again
+before a client is constructed. The prepared request is checked for the expected
+prompt, complete strict schema, web_search-only tools, source inclusion and limits.
+Actual durable delegation checks are deferred until authorized setup; check-only
+does not pretend it has created an accepted decision.
+
+The single request targets attributable eBay resale evidence and known comparable
+differences. Completed sales and active asks remain separate; sold labels, ended
+listings and hidden accepted offers cannot imply a realized price. Ross inventory,
+acquisition availability, taxes, travel, full fee schedules, shipping estimates,
+other marketplaces, profitability and commercial recommendations are excluded
+from this diagnostic's authorized scope. Scope is Manager research guidance, not
+a claim that model compliance or marketplace truth has been established.
+
+The existing OpenAIResaleClient and LiveResaleAdapter are reused, with one SDK
+client constructed only in authorized mode and closed afterward. Existing durable
+STARTED/RECEIVED/VALIDATED/FINISHED audits, exact source/result validation and atomic
+publication remain unchanged. The report separates provider status, typed parsing,
+source attribution, human-required evidence judgment and persistence. It includes
+IDs/hashes, call/pass intent counts, received invocation counts, web-tool statuses,
+available citations/usage, comparable count, limitations, workflow receipt and
+review state. An unreceived started invocation has an unknown dispatch/completion
+count, not a fabricated zero/one server result. Timeout never proves cancellation.
+
+Failure and interruption preserve the directory and durable state. The diagnostic
+does not recover, replay or continue automatically. Explicit recovery uses the
+existing application workflow only after separate human review. No successful
+provider response or citation alone establishes independently verified market
+facts or a profitable opportunity. No economic estimate or review decision is
+generated. SDK/provider errors are reported through bounded audit diagnostics,
+not credentials or arbitrary transport exception messages.
+
+Check-only preparation, safe to run without live authorization:
+
+    FRESH_DIR="$(mktemp -d /tmp/v2-resale-live.XXXXXX)"
+    /Users/garyshirk/agents-project/.venv/bin/python /Users/garyshirk/agents-project/diagnostics/v2_resale_smoke.py --business-db "$FRESH_DIR/arbitrage.db" --sessions-db "$FRESH_DIR/sessions.db" --model gpt-5.4-mini --check-only
+
+Future 7B-2B template — NOT AUTHORIZED in Checkpoint 7B-2A:
+
+    FRESH_DIR="$(mktemp -d /tmp/v2-resale-live.XXXXXX)"
+    /Users/garyshirk/agents-project/.venv/bin/python /Users/garyshirk/agents-project/diagnostics/v2_resale_smoke.py --business-db "$FRESH_DIR/arbitrage.db" --sessions-db "$FRESH_DIR/sessions.db" --model gpt-5.4-mini --run --authorize-live
+
+Use fresh storage and execute that live command at most once after separate
+authorization. Preserve any failure and stop; do not delete data, change models
+or retry. Offline tests exercise the execution path only through injected fake
+providers and fictional example.invalid records, plus the existing adapter and
+workflow regressions. No live API calls, searches or marketplace access occurred
+while implementing 7B-2A.
