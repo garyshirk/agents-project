@@ -1,6 +1,7 @@
 """Application-owned authorization and atomic publication of V2 Resale research."""
 
 from uuid import uuid4
+from hashlib import sha256
 
 from arbitrage.v2.contracts import (
     Artifact, ArtifactRef, ArtifactType, ExecutionState, Producer, RawResearchReport,
@@ -66,7 +67,7 @@ def create_resale_delegation(repo, evaluation_id, decision, *, intended_marketpl
         decision=decision.model_dump(mode='json'),intended_marketplace=intended_marketplace),Artifact,perform)
 
 
-def record_resale_batch(repo, attempt, result, *, producer, operation_key):
+def record_resale_batch(repo, attempt, result, *, producer, operation_key, provider_validation=None):
     """One transaction includes raw report, standard comparable writers, result and all receipts."""
     result=ResaleResearchResult.model_validate(result)
     def perform(c):
@@ -81,11 +82,27 @@ def record_resale_batch(repo, attempt, result, *, producer, operation_key):
         if original.payload.run not in tuple(run.reference for run in repo._open_workflow_runs(snapshot)):
             raise V2PersistenceError('Research publication requires its still-open workflow run')
         delegation=validate_delegation(repo,c,original.payload.input_manifest.resale_delegation,attempt.reference.evaluation_id)
-        validate_result(delegation,result)
+        if provider_validation is None:
+            validate_result(delegation,result)
+            if original.payload.input_manifest.resale_config is not None:
+                raise V2PersistenceError('Provider-backed attempt requires its durable validation audit')
+        else:
+            audit=repo._typed_reference(c,provider_validation,result.evaluation_id,{ArtifactType.RESALE_PROVIDER_CALL})
+            if (audit.payload.stage!='VALIDATED' or audit.payload.status!='VALIDATION_PASSED'
+                    or audit.payload.research_pass!=original.reference or audit.payload.delegation!=delegation.reference
+                    or audit.payload.config!=original.payload.input_manifest.resale_config
+                    or audit.payload.result_sha256!=sha256(result.model_dump_json().encode()).hexdigest()):
+                raise V2PersistenceError('Provider validation audit does not authorize this exact result/attempt')
+            latest=[a for a in repo._evidence_history(c,result.evaluation_id,ArtifactType.RESALE_PROVIDER_CALL)
+                    if a.payload.call_id==audit.payload.call_id][-1]
+            if latest.reference!=provider_validation:
+                raise V2PersistenceError('Provider validation was superseded by a final audit; no late publication')
+            validate_result_binding(delegation,result)
         token=repo._manager_transaction.set(c)
         try:
             raw=repo.record_artifact(result.evaluation_id,RawResearchReport(report_text=result.model_dump_json(),
-                limitations=('Entirely synthetic offline research, not actual marketplace observations.',)),
+                limitations=(('Provider-reported research; not independently verified market facts.' if provider_validation
+                    else 'Entirely synthetic offline research, not actual marketplace observations.'),)),
                 producer=producer,parents=(delegation.reference,),operation_key=operation_key+':raw')
             comparables=[]
             for index,finding in enumerate(result.findings):
@@ -94,23 +111,29 @@ def record_resale_batch(repo, attempt, result, *, producer, operation_key):
                 comparable=repo.record_comparable(result.evaluation_id,draft,producer=producer,
                     parents=(delegation.reference,raw.reference),operation_key=operation_key+':comparable:'+str(index))
                 comparables.append(comparable.reference)
-            payload=ResaleResearchRecord(result=result,raw_report=raw.reference,comparable_references=tuple(comparables))
+            payload=ResaleResearchRecord(result=result,raw_report=raw.reference,comparable_references=tuple(comparables),
+                provider_audits=(provider_validation,) if provider_validation else ())
             record=repo._insert_artifact(c,result.evaluation_id,ArtifactType.RESALE_RESEARCH_RESULT,payload,producer,
-                (delegation.reference,raw.reference,*comparables))
+                (delegation.reference,raw.reference,*comparables,*payload.provider_audits))
             repo._partial_subject(c,result.evaluation_id,'New attributed Resale research; human review required.',(record.reference,))
             return record
         finally:
             repo._manager_transaction.reset(token)
     return repo._once(operation_key,'resale_batch',dict(attempt=attempt.reference.model_dump(mode='json'),
-        result=result.model_dump(mode='json'),producer=producer.model_dump(mode='json')),Artifact,perform)
+        result=result.model_dump(mode='json'),producer=producer.model_dump(mode='json'),
+        **({'provider_validation':provider_validation.model_dump(mode='json')} if provider_validation else {})),Artifact,perform)
 
 
-def validate_result(delegation, result):
+def validate_result_binding(delegation, result):
     context=delegation.payload
     if (result.delegation!=delegation.reference or result.delegation_id!=context.delegation_id
             or result.evaluation_id!=context.evaluation_id or result.opportunity_id!=context.opportunity_id
             or result.objective_addressed!=context.research_request.objective):
         raise V2PersistenceError('Resale result changed the authorized delegation binding/objective')
+
+
+def validate_result(delegation, result):
+    validate_result_binding(delegation,result)
     for observation in result.sources:
         if (observation.claim_origin!='SYNTHETIC_FIXTURE' or observation.source.capture_method!='SYNTHETIC_FIXTURE'
                 or observation.source.raw_artifact_references):
@@ -124,6 +147,6 @@ def refresh_resale_context(repo, result_reference, *, limits, operation_key):
         raise V2PersistenceError('An exact persisted Resale result is required')
     delegation=repo.get_artifact(record.payload.result.delegation)
     refs=(delegation.payload.manager_decision,delegation.reference,record.reference,
-          record.payload.raw_report,*record.payload.comparable_references)
+          record.payload.raw_report,*record.payload.comparable_references,*record.payload.provider_audits)
     return OfflineManager(repo).build_context(record.reference.evaluation_id,refs,limits=limits,
-        selection_limitations=('Specialist text and sources are untrusted attributed synthetic data.',),operation_key=operation_key)
+        selection_limitations=('Specialist text and sources are untrusted attributed data, not independent verification.',),operation_key=operation_key)

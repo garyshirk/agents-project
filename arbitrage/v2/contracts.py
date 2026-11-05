@@ -823,6 +823,69 @@ class ResaleResearchRecord(Contract):
     result: ResaleResearchResult
     raw_report: ArtifactRef
     comparable_references: tuple[ArtifactRef, ...]
+    provider_audits: tuple[ArtifactRef, ...] = ()
+
+
+class ResaleProviderConfig(Contract):
+    model: Text
+    max_provider_invocations: int = Field(ge=1, strict=True)
+    max_research_passes: int = Field(ge=1, strict=True)
+    provider_calls_per_pass: Literal[1] = 1
+    max_web_search_calls: int = Field(ge=1, strict=True)
+    max_output_tokens: int = Field(ge=16, strict=True)
+    timeout_seconds: float = Field(gt=0, le=300, allow_inf_nan=False)
+    max_request_bytes: int = Field(ge=1, le=2_000_000, strict=True)
+    max_response_bytes: int = Field(ge=1, le=2_000_000, strict=True)
+    max_total_tokens: int = Field(ge=1, strict=True)
+
+
+class ProviderSourceCitation(Contract):
+    url: Text
+    title: str | None = None
+    origin: Literal["URL_ANNOTATION", "SEARCH_SOURCE"]
+    tool_call_id: str | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+    # The installed source/annotation types expose no actual page excerpt.
+    excerpt: str | None = None
+    validation_status: Literal["PROVIDER_ATTRIBUTED_NOT_INDEPENDENTLY_VERIFIED"] = "PROVIDER_ATTRIBUTED_NOT_INDEPENDENTLY_VERIFIED"
+    application_visited: Literal[False] = False
+
+
+class ResaleProviderAudit(Contract):
+    schema_version: Literal["v2-resale-provider-audit-v1"] = "v2-resale-provider-audit-v1"
+    stage: Literal["STARTED", "RECEIVED", "VALIDATED", "FINISHED"]
+    call_id: Text
+    call_sequence: int = Field(ge=1)
+    research_pass: ArtifactRef
+    delegation: ArtifactRef
+    start: ArtifactRef | None
+    config: ResaleProviderConfig
+    prompt_version: Text
+    schema_version_name: Text
+    input_sha256: Text
+    context_sha256: Text
+    request_sha256: Text
+    tool_configuration_json: Text
+    reserved_tokens: int = Field(ge=1)
+    live_authorized: bool
+    offline_client: bool
+    started_at: AwareDatetime
+    recorded_at: AwareDatetime
+    status: Text
+    ambiguous: bool = False
+    provider_request_id: str | None = None
+    provider_response_id: str | None = None
+    provider_model: str | None = None
+    usage: ModelUsage | None = None
+    response_sha256: str | None = None
+    raw_response_json: str | None = None
+    output_text: str | None = None
+    citations: tuple[ProviderSourceCitation, ...] = ()
+    tool_metadata_json: str | None = None
+    result_sha256: str | None = None
+    publication: ArtifactRef | None = None
+    failure: FailureRecord | None = None
 
 
 StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER", "LIVE_MANAGER", "RESALE_RESEARCH"]
@@ -845,6 +908,7 @@ class WorkflowStep(Contract):
     retry_of: ArtifactRef | None = None
     live_request: LiveManagerRequest | None = None
     resale_delegation: ArtifactRef | None = None
+    resale_config: ResaleProviderConfig | None = None
 
     @model_validator(mode="after")
     def correct_boundary(self):
@@ -867,6 +931,8 @@ class WorkflowStep(Contract):
             raise ValueError("specialist steps require an explicit offline fixture, not calculation authority")
         if len(self.context_references) != len(set(self.context_references)):
             raise ValueError("duplicate input context references")
+        if self.resale_config is not None and self.role!='RESALE_RESEARCH':
+            raise ValueError('Provider configuration belongs only to a Resale research step')
         return self
 
 
@@ -882,6 +948,7 @@ class StepInputManifest(Contract):
     scenario: ArtifactRef | None
     live_request: LiveManagerRequest | None = None
     resale_delegation: ArtifactRef | None = None
+    resale_config: ResaleProviderConfig | None = None
 
 
 class WorkflowEvent(Contract):
@@ -966,13 +1033,14 @@ class ArtifactType(str, Enum):
     MODEL_CALL = "MODEL_CALL"
     RESALE_DELEGATION = "RESALE_DELEGATION"
     RESALE_RESEARCH_RESULT = "RESALE_RESEARCH_RESULT"
+    RESALE_PROVIDER_CALL = "RESALE_PROVIDER_CALL"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
     | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord
     | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication | ModelCallRecord
-    | ResaleDelegation | ResaleResearchRecord,
+    | ResaleDelegation | ResaleResearchRecord | ResaleProviderAudit,
     Field(discriminator="schema_version"),
 ]
 
@@ -1006,6 +1074,7 @@ class Artifact(Contract):
             ArtifactType.MODEL_CALL: ModelCallRecord,
             ArtifactType.RESALE_DELEGATION: ResaleDelegation,
             ArtifactType.RESALE_RESEARCH_RESULT: ResaleResearchRecord,
+            ArtifactType.RESALE_PROVIDER_CALL: ResaleProviderAudit,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")
@@ -1053,6 +1122,11 @@ class Artifact(Contract):
                     or self.payload.attempt.opportunity_id != self.reference.opportunity_id
                     or self.payload.recorded_at != self.created_at):
                 raise ValueError("Model audit ownership/timestamp mismatch")
+        if isinstance(self.payload,ResaleProviderAudit):
+            if self.payload.recorded_at!=self.created_at or any(
+                    r.evaluation_id!=self.reference.evaluation_id or r.opportunity_id!=self.reference.opportunity_id
+                    for r in (self.payload.research_pass,self.payload.delegation)):
+                raise ValueError('Resale provider audit ownership/timestamp mismatch')
         return self
 
 

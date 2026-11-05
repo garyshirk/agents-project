@@ -773,7 +773,7 @@ class V2Repository:
                 reason="Explicit bounded offline batch.",owner_token=owner_token,steps=steps)
         # Token is acquisition identity, not request content; replayers cannot acquire the original claim.
         return self._once(operation_key,"workflow_run",{"evaluation_id":evaluation_id,
-            "steps":[s.model_dump(mode="json",exclude={name for name in ("live_request","resale_delegation")
+            "steps":[s.model_dump(mode="json",exclude={name for name in ("live_request","resale_delegation","resale_config")
                 if getattr(s,name) is None}) for s in steps]},Artifact,perform)
 
     def begin_workflow_attempt(self, run: ArtifactRef, step_id, *, owner_token, operation_key):
@@ -795,7 +795,7 @@ class V2Repository:
                 step_id=step.step_id,role=step.role,submission=opportunity.submission,
                 context_references=step.context_references,context_text=step.context_text,
                 fixture=step.fixture,scenario=step.scenario,live_request=step.live_request,
-                resale_delegation=step.resale_delegation)
+                resale_delegation=step.resale_delegation,resale_config=step.resale_config)
             number = 1 + sum(a.payload.status == "STARTED" and a.payload.input_manifest.step_id == step_id for a in snapshot.attempts)
             now = _now()
             payload = StepAttempt(attempt_id=str(uuid4()),attempt_number=number,run=run,

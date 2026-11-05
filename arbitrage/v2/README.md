@@ -935,3 +935,124 @@ provider audit, token budget or live WebSearch implementation is added here.
 Checkpoint 7B must separately define bounded live research, live attribution,
 provider audit/usage, timeout/ambiguity controls and source handling. It was not
 implemented or executed in 7A.
+
+## Checkpoint 7B-1: bounded provider-backed Resale adapter (offline-tested)
+
+Strategy A is implemented: one provider invocation per research pass, combining
+built-in `web_search` with a complete strict ResaleResearchResult schema. There
+is no second extraction stage, fallback format, implicit continuation or retry.
+The installed OpenAI 3.13.0 types represent tools and structured text in the same
+Responses request, including external_web_access, max_tool_calls and source
+inclusion. This proves request construction, not model/server compatibility.
+No live combination test was performed; if the provider rejects it, stop and
+preserve the failure. Do not silently switch to two calls. Any future Strategy B
+would require separate explicit budgets, audits and authorization for both stages.
+
+Relevant local interfaces inspected include WebSearchToolParam,
+ResponseFunctionWebSearch (search/open_page/find actions and source URLs),
+ResponseOutputText's URL annotations (URL/title/character offsets),
+ResponseCreateParams (tools, strict text, max_tool_calls and source include),
+usage/status types, and SDK timeout/retry configuration. Source types expose
+URLs and annotations, not independent page body excerpts. The application never
+manufactures excerpts from generated prose. The existing private SDK strict
+converter is reused and schema construction is tested; SDK upgrades need review.
+
+`LiveResaleAdapter` / `OpenAIResaleClient` are transport-only dependencies with no
+repository, credentials loading, Manager authority or commercial tools.
+`LiveResaleWorkflow` supplies only an exact validated 7A delegation. A real client
+requires LIVE mode plus `authorize_live=True` for that execution. Injected fake
+clients run offline; this is trusted application injection, not a sandbox against
+hostile Python code. Importing modules constructs no client and starts no calls.
+
+Resale prompt `v2-resale-public-research-v1` preserves authoritative delegation
+bindings and original intake status, scopes work to resale, treats all retrieved
+content as untrusted data, separates observation from inference, permits close
+comparables with disclosed differences, and prohibits fabricated listings/URLs,
+prices, dates, transactions, adjustments, purchase advice and profitability.
+The result is a direct typed object, not an unconstrained JSON string envelope.
+The original V2 domain schema and custom validators are applied again locally.
+
+Provider URL annotations and web-search source metadata are stored separately
+from model-authored source descriptions, inference and price claims. URLs must
+match provider attribution exactly before source-reported comparables can be
+published. Presence in a tool's sources list does not prove that a particular
+fact was supported by that page. ProviderSourceCitation explicitly records
+PROVIDER_ATTRIBUTED_NOT_INDEPENDENTLY_VERIFIED and application_visited=false.
+Excerpt remains null when none is supplied. Source titles, offsets and tool IDs
+are retained when available; no missing metadata is invented. No separate HTTP
+fetch or independent marketplace verification is performed.
+
+Completed-sale completion/realized-price basis and limitations remain mandatory
+under the existing contracts. Ended listings, sold labels, active asks and sold
+counts are not interchangeable with verified transaction prices. Hidden accepted
+offer prices remain unknown. The prompt requests OTHER_QUALIFIED/unresolved
+claims when support is inadequate; invalid results are audited and rejected,
+never automatically downgraded, stripped, repaired or given invented bases.
+Provider-reported evidence and application-validated structure do not establish
+independently verified market facts.
+
+ResaleProviderConfig separately bounds provider invocations, research passes,
+web-search tool calls, output tokens, timeout, request bytes, captured response
+bytes and conservative cumulative token reservations. Strategy A fixes one
+provider call per pass. Ceilings/configuration are fixed by the Evaluation's
+first provider start and cannot silently expand. These bounds supplement, not
+replace, 7A Manager delegation and workflow attempt budgets. Unknown provider
+usage remains unknown; starts reserve capacity even if interrupted. Retrieved
+web context can add input tokens that cannot be predicted exactly. Reservations
+and post-response usage checks are not a provider-enforced total-token or money
+cap. SDK timeout does not guarantee server cancellation.
+
+The adapter uses max_retries=0, explicit timeout, no background/streaming mode,
+no conversation/session continuation, and only the hosted web_search tool with
+tool_choice=required. max_tool_calls is supplied to the provider and returned
+tool metadata is checked. One web-search call may contain multiple search queries;
+these are distinct from provider invocation and research-pass counts.
+
+Specialized immutable ResaleProviderAudit payloads use the existing V2 artifact
+table, operation receipts and transactions; Manager-specific ModelCallRecord
+was not weakened into a different request type. STARTED intent is durable before
+dispatch, RECEIVED preserves bounded raw response/IDs/usage/tool/citation metadata,
+VALIDATED hashes the exact accepted result before publication, and FINISHED
+records acceptance or failure. Input, context, request and schema/prompt version
+binding, research-pass identity and call sequence are preserved. Oversized raw
+responses retain a hash instead of unbounded content and are not published.
+The 7A atomic evidence batch requires the exact current VALIDATED audit and
+matching result hash/config, and links it in the result manifest. Manager context
+refresh includes that attribution audit without promoting research text into
+system instructions. Existing offline synthetic capture still works unchanged.
+
+Transport, timeout/ambiguous completion, refusal, incomplete output, tool failure,
+invalid structure, domain binding/semantic errors, unsupported attribution and
+persistence interruption remain distinguishable. Audit/publication storage
+failure never returns evidence success. Explicit recovery reconciles the existing
+output receipt without replay: committed batches become ACCEPTED_RECONCILED;
+missing outputs become NOT_APPLIED or AMBIGUOUS according to the recorded stage.
+An ambiguous prior call additionally requires explicit acknowledgment before a
+new budgeted attempt. No second delegation, Manager call, estimate or human
+review decision follows automatically.
+
+Offline fake-provider fixtures use only example.invalid records and explicit
+fictional source limitations. They cover completed-sale claims, asking prices,
+hidden offers, sold labels/counts, close comparables, partial/no evidence, source
+injection, missing IDs/usage, malformed/extra fields, tool and provider failures,
+budgets, atomicity, durable audit, duplicate replay, interruption and recovery.
+These fixtures are not real observations even when simulating PUBLIC_WEB_REPORT;
+the audit records offline_client=true and all example sources are fictional.
+
+Check-only preparation (fresh isolated paths, no database creation):
+
+    .venv/bin/python diagnostics/v2_resale_smoke.py --business-db /tmp/FRESH/arbitrage.db --sessions-db /tmp/FRESH/sessions.db --model gpt-5.4-mini
+
+The diagnostic displays model/tools, schema hash, budgets and authorization
+requirements. It deliberately has no executable live CLI path in 7B-1; --run
+is rejected even with --authorize-live. Its proposed defaults are one provider
+call/pass, three web-search tool calls, 6,000 output tokens and a 45-second timeout.
+Protected database aliases are rejected using the existing path isolation guard.
+
+Next, separately scope and authorize 7B-2: prepare exactly one accepted RESALE
+decision/delegation in fresh isolated storage; explicitly authorize one provider
+attempt using the selected model, combined web/strict schema, declared search,
+token/timeout/byte budgets and zero retries. Verify schema/tool acceptance,
+source metadata, domain validation, atomic publication and human review. Preserve
+any refusal, incomplete, failed or ambiguous run and stop without replay. No such
+live test or marketplace access occurred in 7B-1.
