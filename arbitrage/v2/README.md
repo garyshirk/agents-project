@@ -838,3 +838,100 @@ safeguards are unchanged. Next: separately authorize one controlled live test
 with fresh isolated storage to verify full-schema acceptance and application
 integration. If successful, scope a subsequent live Resale Specialist integration.
 Neither live step was executed in this checkpoint.
+
+## Checkpoint 7A: offline Resale specialist integration
+
+This is a V2-only application-owned boundary, not the V1C Resale Agent and not
+a live research implementation. The flow is accepted Manager RESALE research
+decision → explicit application delegation → one injected offline specialist
+invocation → validated append-only research batch → explicit bounded Manager
+context refresh. No second Manager call, estimate, assumption, calculation,
+summary, human decision, purchase or listing follows automatically.
+
+`create_resale_delegation` requires the exact persisted MANAGER_DECISION and
+its MANAGER_APPLICATION receipt in a running Evaluation. Fabricated, foreign,
+wrong-role and superseded decisions are rejected. An unaccepted proposal is
+not authority. The application loads the original OpportunitySubmission and
+accepted ResearchRequest; a Manager-authored research target is not a canonical
+product identity. The caller supplies the intended marketplace explicitly, with
+no Python extraction from intake prose. The input preserves HYPOTHETICAL versus
+HUMAN_REPORTED status, original text, qualifications, exact decision/context
+references and context hash, objective/scope and invocation cap.
+
+Versioned contracts include ResaleDelegation, ResaleResearchInput,
+ResaleResearchResult and ResaleResearchRecord. Results contain exact delegation
+and ownership binding, objective addressed, attributed source observations,
+standard ComparableDraft/PriceEvidence records, specialist comparability claims,
+unresolved attributes, limitations, missing evidence, follow-up suggestions
+and explanation. Completed, partial, no-evidence and explicit research-failed
+results are valid communications; a successful workflow receipt means the result
+was safely recorded, not that research found usable evidence. Transport failure
+is a separate bounded workflow failure and does not create a research batch.
+
+Existing categories are reused verbatim, including ACTIVE_ASK and OTHER_QUALIFIED
+(rather than introducing ACTIVE_ASKING or OTHER aliases). COMPLETED_SALE requires
+completion support and, for a numerical price, realized-price support. Research
+claims also require an attributed directly supporting source and limitations.
+Active/ended listings and cumulative sold counts cannot be labeled completed
+transactions. A sold/accepted-offer item may retain unknown realized price;
+missing price is never filled from an ask. URLs, dates and quantity are optional;
+URL shape and source-reference consistency are validated, not source truth.
+Source observation versus inference/general knowledge is explicit. The offline
+adapter requires SYNTHETIC_FIXTURE attribution, even for simulated source claims.
+
+Category-neutral products preserve identifiers, variant attributes (including
+size/width when known), packaging, condition and bundles. Exact, close, weak,
+not meaningfully comparable and insufficient-evidence classifications are stored
+as specialist claims in the result manifest. Standard comparable records preserve
+similarities/differences and prices. They are not automatically turned into
+Manager assessments or numerical similarity scores. Close comparables are not
+discarded and no exact-match gate is introduced.
+
+`OfflineResaleAdapter` receives only a typed application-built request and an
+explicitly offline injected client, never a repository. `OfflineResaleWorkflow`
+reloads and validates the persisted delegation before dispatch and publication.
+The existing workflow supplies durable run/attempt claims, idempotency, bounded
+global and per-step attempts, explicit recovery and output receipts. The accepted
+Manager invocation cap is additionally enforced transactionally across all
+delegations for that exact decision; failed/ambiguous starts consume budget.
+No automatic retry or specialist substitution exists. Human-controlled retry
+requires an explicit latest failed-attempt reference and remaining budgets.
+
+`record_resale_batch` composes the existing raw-report and comparable writers
+inside one outer SQLite transaction using the existing transaction context.
+The transaction includes raw typed-result JSON, normal comparable records and
+their receipts, review-subject updates, and an application result manifest with
+exact raw/comparable references. The application attaches the actual raw report
+reference to comparable sources; source and price claims otherwise remain intact.
+No parallel comparable store or SQLite table migration is introduced. Failure
+on any write rolls back the entire batch. Workflow completion follows the commit;
+if interrupted between them, existing recovery reconciles the committed output
+receipt without invoking the specialist again. Missing receipts never imply
+success. Evidence and receipts remain append-only, and comparable revision rules
+are unchanged.
+
+`refresh_resale_context` explicitly selects the accepted decision, delegation,
+result, raw report and comparable refs through existing bounded context assembly.
+It does not invoke a model. New findings invalidate old review/current contexts
+through existing review-subject behavior. All specialist/retrieved prose remains
+untrusted data; no research text is promoted into Manager instructions. Context
+size limits fail explicitly rather than silently dropping evidence.
+
+Tests use the hypothetical Nike/Ross USD 39.99 offer and fictional
+example.invalid sources: a close asking-price comparable, a qualified simulated
+completed sale, packaging differences, unknown width/colorway, missing evidence
+and a concise explanation. Separate fixtures cover no evidence, partial results,
+research failure and transport failure. Tests cover ownership, immutable intake,
+budgets, retries, append-only revisions, atomic rollback, idempotency, restart
+recovery, context freshness/authorization, injection and human review isolation.
+These are not actual Nike/eBay observations, market prices or profitability.
+
+Known limitations: Python clients are trusted injected application dependencies,
+not a sandbox for hostile executable code. The application can validate typed
+bindings and provenance claims, not independently verify a source's truth or
+judge whether research economically satisfies its objective. Marketplace input
+is explicit application context, not verified destination research. No raw
+provider audit, token budget or live WebSearch implementation is added here.
+Checkpoint 7B must separately define bounded live research, live attribution,
+provider audit/usage, timeout/ambiguity controls and source handling. It was not
+implemented or executed in 7A.

@@ -738,7 +738,94 @@ class WorkflowLimits(Contract):
     max_calculation_attempts: int = Field(ge=1, strict=True)
 
 
-StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER", "LIVE_MANAGER"]
+class ResaleDelegation(Contract):
+    schema_version: Literal["v2-resale-delegation-v1"] = "v2-resale-delegation-v1"
+    delegation_id: Text
+    opportunity_id: Text
+    evaluation_id: Text
+    manager_decision: ArtifactRef
+    manager_context: ArtifactRef
+    context_sha256: Text
+    original_intake: OpportunitySubmission
+    # Original descriptive intake, not a Manager-authored canonical product identity.
+    target_product_description: Text
+    research_request: ResearchRequest
+    intended_marketplace: Text
+    evidence_limitations: tuple[Text, ...]
+
+
+class ResaleSourceObservation(Contract):
+    source_id: Text
+    source: ComparableSource
+    claim_origin: Literal["SYNTHETIC_FIXTURE", "SPECIALIST_SOURCE_REPORT", "SPECIALIST_INFERENCE",
+                          "GENERAL_MODEL_KNOWLEDGE", "HUMAN_INTAKE"]
+    directly_supports_claim: bool | None
+    explanation: Text
+    listing_status: Literal["TRANSACTION_COMPLETED", "MARKED_SOLD", "ENDED", "ACCEPTED_OFFER",
+                            "ACTIVE", "CUMULATIVE_SOLD_COUNT", "UNKNOWN"] = "UNKNOWN"
+    reported_quantity_sold: int | None = Field(default=None, ge=0, strict=True)
+
+
+class ResaleResearchInput(Contract):
+    schema_version: Literal["v2-resale-research-input-v1"] = "v2-resale-research-input-v1"
+    delegation: ArtifactRef
+    context: ResaleDelegation
+
+
+class ResaleResearchFinding(Contract):
+    source_id: Text
+    comparable: ComparableDraft
+    comparability_claim: ComparabilityCategory
+    explanation: Text
+    unresolved_attributes: tuple[Text, ...] = ()
+
+
+class ResaleResearchResult(Contract):
+    schema_version: Literal["v2-resale-research-result-v1"] = "v2-resale-research-result-v1"
+    delegation: ArtifactRef
+    delegation_id: Text
+    opportunity_id: Text
+    evaluation_id: Text
+    objective_addressed: Text
+    status: Literal["COMPLETED", "PARTIAL", "NO_EVIDENCE", "RESEARCH_FAILED"]
+    sources: tuple[ResaleSourceObservation, ...] = ()
+    findings: tuple[ResaleResearchFinding, ...] = ()
+    unresolved_attributes: tuple[Text, ...] = ()
+    limitations: tuple[Text, ...]
+    missing_evidence: tuple[Text, ...]
+    suggested_follow_up: tuple[Text, ...] = ()
+    explanation: Text
+
+    @model_validator(mode="after")
+    def source_links(self):
+        sources={s.source_id:s for s in self.sources}
+        if len(sources)!=len(self.sources):
+            raise ValueError("Source identifiers must be unique")
+        if self.status in {"NO_EVIDENCE", "RESEARCH_FAILED"} and self.findings:
+            raise ValueError("No-evidence/failed research cannot assert usable comparables")
+        for finding in self.findings:
+            source=sources.get(finding.source_id)
+            if source is None or finding.comparable.source!=source.source:
+                raise ValueError("Comparable must preserve its exact declared source")
+            price=finding.comparable.price_evidence
+            if price.evidence_type==PriceEvidenceType.COMPLETED_SALE:
+                if source.listing_status in {"ACTIVE", "ENDED", "CUMULATIVE_SOLD_COUNT"}:
+                    raise ValueError("An active/ended listing or cumulative sold count is not a completed transaction")
+                if source.directly_supports_claim is not True or not finding.comparable.limitations:
+                    raise ValueError("Completed-sale claims require direct support and explicit limitations")
+                if source.claim_origin in {"SPECIALIST_INFERENCE", "GENERAL_MODEL_KNOWLEDGE"}:
+                    raise ValueError("Inference/general knowledge cannot establish a completed transaction")
+        return self
+
+
+class ResaleResearchRecord(Contract):
+    schema_version: Literal["v2-resale-research-record-v1"] = "v2-resale-research-record-v1"
+    result: ResaleResearchResult
+    raw_report: ArtifactRef
+    comparable_references: tuple[ArtifactRef, ...]
+
+
+StepRole = Literal["RESEARCH", "COMPARABLE", "ASSESSMENT", "ASSUMPTION", "SCENARIO", "CALCULATION", "SUMMARY", "MANAGER", "LIVE_MANAGER", "RESALE_RESEARCH"]
 
 
 class OfflineFixture(Contract):
@@ -757,10 +844,17 @@ class WorkflowStep(Contract):
     scenario: ArtifactRef | None = None
     retry_of: ArtifactRef | None = None
     live_request: LiveManagerRequest | None = None
+    resale_delegation: ArtifactRef | None = None
 
     @model_validator(mode="after")
     def correct_boundary(self):
-        if self.role == "LIVE_MANAGER":
+        if self.role == "RESALE_RESEARCH":
+            if (self.resale_delegation is None or self.resale_delegation not in self.context_references
+                    or self.fixture is not None or self.scenario is not None or self.live_request is not None):
+                raise ValueError("Resale research requires an exact application delegation and no alternate request")
+        elif self.resale_delegation is not None:
+            raise ValueError("Only resale research can carry a delegation")
+        elif self.role == "LIVE_MANAGER":
             if (self.live_request is None or self.fixture is not None or self.scenario is not None
                     or self.live_request.context not in self.context_references):
                 raise ValueError("Live Manager requires exact request context and no offline fixture/tools")
@@ -787,6 +881,7 @@ class StepInputManifest(Contract):
     fixture: OfflineFixture | None
     scenario: ArtifactRef | None
     live_request: LiveManagerRequest | None = None
+    resale_delegation: ArtifactRef | None = None
 
 
 class WorkflowEvent(Contract):
@@ -869,12 +964,15 @@ class ArtifactType(str, Enum):
     MANAGER_DECISION = "MANAGER_DECISION"
     MANAGER_APPLICATION = "MANAGER_APPLICATION"
     MODEL_CALL = "MODEL_CALL"
+    RESALE_DELEGATION = "RESALE_DELEGATION"
+    RESALE_RESEARCH_RESULT = "RESALE_RESEARCH_RESULT"
 
 
 Payload = Annotated[
     PartialReviewSubject | FailureRecord | EconomicAssessmentSummary | AssumptionRecord
     | RawResearchReport | ResaleComparable | ComparableAssessment | EconomicScenario | CalculationRecord
-    | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication | ModelCallRecord,
+    | WorkflowEvent | StepAttempt | ManagerContext | ManagerDecision | ManagerApplication | ModelCallRecord
+    | ResaleDelegation | ResaleResearchRecord,
     Field(discriminator="schema_version"),
 ]
 
@@ -906,6 +1004,8 @@ class Artifact(Contract):
             ArtifactType.MANAGER_DECISION: ManagerDecision,
             ArtifactType.MANAGER_APPLICATION: ManagerApplication,
             ArtifactType.MODEL_CALL: ModelCallRecord,
+            ArtifactType.RESALE_DELEGATION: ResaleDelegation,
+            ArtifactType.RESALE_RESEARCH_RESULT: ResaleResearchRecord,
         }
         if self.artifact_type not in expected or not isinstance(self.payload, expected[self.artifact_type]):
             raise ValueError("artifact type and validated payload must agree")

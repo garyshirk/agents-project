@@ -745,6 +745,19 @@ class V2Repository:
             for step in steps:
                 for ref in step.context_references:
                     self._reference(c,ref,evaluation_id)
+                if step.role == "RESALE_RESEARCH":
+                    from arbitrage.v2.resale_delegation import validate_delegation
+                    delegation=validate_delegation(self,c,step.resale_delegation,evaluation_id)
+                    decision=delegation.payload.manager_decision
+                    used=0
+                    for prior_start in starts:
+                        previous=prior_start.payload.input_manifest.resale_delegation
+                        if previous and self._reference(c,previous,evaluation_id).payload.manager_decision==decision:
+                            used+=1
+                    planned=sum(s.role=="RESALE_RESEARCH" and
+                        validate_delegation(self,c,s.resale_delegation,evaluation_id).payload.manager_decision==decision for s in steps)
+                    if used+planned > delegation.payload.research_request.max_invocations:
+                        raise V2PersistenceError("Accepted Manager research invocation budget exceeded")
                 prior = [a for a in snapshot.attempts if a.payload.input_manifest.step_id == step.step_id]
                 previous_starts = [a for a in prior if a.payload.status == "STARTED"]
                 if len(previous_starts) >= limits.max_attempts_per_step:
@@ -760,7 +773,8 @@ class V2Repository:
                 reason="Explicit bounded offline batch.",owner_token=owner_token,steps=steps)
         # Token is acquisition identity, not request content; replayers cannot acquire the original claim.
         return self._once(operation_key,"workflow_run",{"evaluation_id":evaluation_id,
-            "steps":[s.model_dump(mode="json",exclude={"live_request"} if s.live_request is None else set()) for s in steps]},Artifact,perform)
+            "steps":[s.model_dump(mode="json",exclude={name for name in ("live_request","resale_delegation")
+                if getattr(s,name) is None}) for s in steps]},Artifact,perform)
 
     def begin_workflow_attempt(self, run: ArtifactRef, step_id, *, owner_token, operation_key):
         run = ArtifactRef.model_validate(run)
@@ -780,7 +794,8 @@ class V2Repository:
             manifest = StepInputManifest(opportunity_id=run.opportunity_id,evaluation_id=run.evaluation_id,
                 step_id=step.step_id,role=step.role,submission=opportunity.submission,
                 context_references=step.context_references,context_text=step.context_text,
-                fixture=step.fixture,scenario=step.scenario,live_request=step.live_request)
+                fixture=step.fixture,scenario=step.scenario,live_request=step.live_request,
+                resale_delegation=step.resale_delegation)
             number = 1 + sum(a.payload.status == "STARTED" and a.payload.input_manifest.step_id == step_id for a in snapshot.attempts)
             now = _now()
             payload = StepAttempt(attempt_id=str(uuid4()),attempt_number=number,run=run,
@@ -806,7 +821,8 @@ class V2Repository:
                     "ASSESSMENT":ArtifactType.COMPARABLE_ASSESSMENT,"ASSUMPTION":ArtifactType.SCENARIO_ASSUMPTION,
                     "SCENARIO":ArtifactType.ECONOMIC_SCENARIO,"CALCULATION":ArtifactType.CALCULATION,
                     "SUMMARY":ArtifactType.EVALUATION_SUMMARY,"MANAGER":ArtifactType.MANAGER_APPLICATION,
-                    "LIVE_MANAGER":ArtifactType.MANAGER_APPLICATION}[original.payload.input_manifest.role]
+                    "LIVE_MANAGER":ArtifactType.MANAGER_APPLICATION,
+                    "RESALE_RESEARCH":ArtifactType.RESALE_RESEARCH_RESULT}[original.payload.input_manifest.role]
                 receipt = c.execute("SELECT result_json FROM v2_operations WHERE operation_key=?",
                     ("workflow-output:" + original.payload.attempt_id,)).fetchone()
                 if receipt is None or Artifact.model_validate_json(receipt[0]) != output or output.artifact_type != expected:
