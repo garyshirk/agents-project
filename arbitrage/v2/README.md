@@ -1148,3 +1148,70 @@ or retry. Offline tests exercise the execution path only through injected fake
 providers and fictional example.invalid records, plus the existing adapter and
 workflow regressions. No live API calls, searches or marketplace access occurred
 while implementing 7B-2A.
+
+### Checkpoint 7B-2C: Resale output-boundary correction (offline)
+
+The 7B-2B provider request completed, but **no research evidence was accepted**.
+Three ACTIVE_ASK records put the denial “Active ask only; not a completed-sale
+price.” into `completion_basis`. Those strings fit the provider JSON Schema but
+violate the existing Pydantic cross-field validator. Source copies also differed
+in `limitations`. The provider schema describes each object independently; it
+cannot enforce equality across `sources[].source` and
+`findings[].comparable.source`. Application validation remains mandatory.
+
+Prompt `v2-resale-public-research-v2` now explicitly requires null
+`completion_basis` and `realized_price_basis` for ACTIVE_ASK,
+PUBLISHED_REFERENCE, HUMAN_REPORTED and OTHER_QUALIFIED. Explanations belong in
+`price_evidence.context` or limitations. ACTIVE_ASK/PUBLISHED_REFERENCE cannot
+assert `transaction_at`; the other categories require actual transaction-date
+support. COMPLETED_SALE still requires completion evidence and realized-price
+support for a numerical amount. Hidden accepted offers do not establish that
+amount. No validator, category, default or schema shape was changed; schema
+version remains `v2-resale-research-result-v1`. Durable audits record the new
+prompt version and unchanged schema version actually used.
+
+The prompt requires exact repeated source objects, including null fields and
+ordered limitations. Finding-specific limitations belong on the comparable.
+There is no `title` property on ComparableSource; provider citation titles are
+separate metadata. A source-reference redesign was deferred: the existing
+`source_id` links findings, but ComparableDraft also embeds a source. Removing
+that copy would affect shared contracts, publication and readers. This checkpoint
+keeps those contracts and exact equality checks rather than adding a registry or
+silently merging conflicting copies.
+
+Timestamp provenance remains explicit:
+
+- Application `started_at`/`recorded_at` audit times are application-owned local
+  event times, not source observation or provider search times.
+- Provider search/tool metadata is preserved verbatim. Current citation extraction
+  does not supply a corroborated source observation timestamp; missing provider
+  timestamps stay missing.
+- Source publication dates, if reported, belong in labeled context/limitations.
+- `ComparableSource.observed_at` is nullable and should remain null unless its
+  observation time is supported. Never manufacture midnight or today's date.
+- `PriceEvidence.transaction_at` is a separate claimed actual transaction time.
+
+The application rejects malformed/naive timestamps and conflicting source copies,
+but cannot detect every plausible fabricated or mislabeled timestamp. An
+attributed URL establishes neither a timestamp nor source truth. A syntactically
+valid model-authored timestamp can currently pass unchanged and stays unverified;
+tests explicitly preserve this limitation rather than claiming corroboration.
+
+Sanitized `.invalid` regression fixtures reproduce the ACTIVE_ASK denial and
+source-copy mismatch without importing, repairing or replaying the historical
+response. Offline tests exercise corrected publication, every supported source
+field mismatch, unsupported attribution, nullable/invalid/plausible timestamps,
+publication versus observation versus transaction dates, completed-sale support,
+hidden offers, no evidence, partial results, provider failure, rollback, replay
+protection, restart reconciliation, context refresh and the intact review queue.
+Existing provider budgets, audit stages/hashes, zero retries, publication
+transactions and human-review currentness remain unchanged. No economic
+calculation, human decision or automatic second research pass is introduced.
+
+The diagnostic's pinned prompt checks now expect v2; check-only still creates no
+client, database or claim marker. Its live limits remain gpt-5.4-mini, one pass,
+one provider invocation, at most three web-search calls, 6,000 output tokens,
+45 seconds and zero retries. The next checkpoint should separately authorize
+one fresh-directory controlled live retest, then assess domain validity and
+research quality independently. **No live retest is authorized or executed by
+this offline correction.** Preserve the failed 7B-2B database and audits.

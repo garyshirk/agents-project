@@ -81,7 +81,7 @@ def validate_paths(business,sessions):
 def validate_prepared(prepared,config):
     if config!=configuration(config.model):raise ValueError('Controlled budgets cannot change or be omitted')
     body=json.loads(prepared.api_json)
-    if (prepared.prompt_version!='v2-resale-public-research-v1' or PROMPT_VERSION!=prepared.prompt_version
+    if (prepared.prompt_version!='v2-resale-public-research-v2' or PROMPT_VERSION!=prepared.prompt_version
             or body.get('model')!=MODEL or body.get('input',[{}])[0].get('content')!=INSTRUCTIONS
             or body.get('tools')!=[dict(type='web_search',external_web_access=True,search_context_size='low')]
             or body.get('tool_choice')!='required' or body.get('max_tool_calls')!=3
@@ -231,7 +231,7 @@ def main(argv=None,*,client_factory=None):
     try:
         config=configuration(args.model);paths=validate_paths(args.business_db,args.sessions_db)
         generated=output_schema()
-        if (PROMPT_VERSION!='v2-resale-public-research-v1' or generated.get('additionalProperties') is not False
+        if (PROMPT_VERSION!='v2-resale-public-research-v2' or generated.get('additionalProperties') is not False
                 or 'findings' not in generated.get('properties',{}) or 'proposal_json' in generated.get('properties',{})
                 or set(generated.get('required',()))!=set(generated.get('properties',{}))):
             raise ValueError('Unexpected prompt or strict schema policy')
