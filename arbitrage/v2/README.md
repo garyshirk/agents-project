@@ -1,3 +1,16 @@
+# V2 implementation and checkpoint history
+
+**Current status (2026-11-08): PAUSED BY USER.** Read the canonical
+[project overview](../../README.md), [current status/roadmap](../../docs/CURRENT_STATUS.md)
+and [resumption guide](../../docs/RESUMPTION_GUIDE.md) first.
+
+The sections below are chronological checkpoint records. Statements such as
+“not yet live-tested” and “no agent orchestration” describe those earlier
+checkpoints, not the complete current package. Later phases added controlled
+Manager/Resale live adapters. 7B-2D passed technical publication with PARTIAL,
+limited/ambiguous evidence; full live economic orchestration remains incomplete.
+No historical live command below is current authorization to execute it.
+
 # V2 Checkpoint 1: persistence and review foundation
 
 This package has no agent orchestration, terminal commands, live research,

@@ -1,6 +1,10 @@
 # V2 development databases
 
-This branch still runs V1C behavior. No V2 business architecture is implemented.
+**Current status: PAUSED BY USER.** Start with the [project overview](README.md),
+[current status](docs/CURRENT_STATUS.md) and [resumption guide](docs/RESUMPTION_GUIDE.md).
+V2 business architecture and controlled provider adapters now exist in `arbitrage/v2`.
+The launcher described here still runs the **legacy V1C terminal behavior**, not
+an integrated V2 application. These are launcher notes, not the current V2 status.
 
 Use the fail-closed launcher from the project root. Both explicit paths are
 required. To check configuration without opening databases or calling models:
@@ -9,7 +13,7 @@ required. To check configuration without opening databases or calling models:
 .venv/bin/python -m arbitrage.v2_dev --business-db /Users/garyshirk/agents-project/dev_data/v2/arbitrage.db --sessions-db /Users/garyshirk/agents-project/dev_data/v2/sessions.db --check
 ```
 
-To initialize the existing business and SDK session schemas without starting the
+For the legacy launcher only: to initialize the existing V1C business and SDK session schemas without starting the
 application, copying history, or making model calls, replace `--check` with
 `--initialize`. Initialization is idempotent; it never clears existing records.
 
@@ -50,6 +54,6 @@ Database access inventory: application startup opens the configured business
 repository and SDK session file; repository initialization and subsequent
 methods use its explicit stored business path, including selection transactions
 and read-only context snapshots. Direct `initialize_database()` and default
-repository construction honor the paired overrides. Existing diagnostics do not
-open these business/session files. Tests inject temporary paths or mock startup
+repository construction honor the paired overrides. V2 diagnostics use explicitly selected, isolated temporary files and never
+use these persistent development or protected business/session files. Tests inject temporary paths or mock startup
 stores; they do not require the development files or production secrets.
